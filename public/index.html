@@ -226,7 +226,11 @@
             document.getElementById('modal-overlay').classList.remove('show-modal');
         }
 
-        function install(type) {
+        /**
+         * Hauptfunktion für die Installation.
+         * Sendet asynchron Daten an den Server zum Loggen und leitet dann zu Stremio weiter.
+         */
+        async function install(type) {
             const rd = document.getElementById('rdKey').value.trim();
             const tb = document.getElementById('tbKey').value.trim();
             
@@ -238,20 +242,40 @@
                 return;
             }
 
-            // Capture catalog settings from the UI
+            // ====================================================================
+            // LOGGING-BLOCK: SENDET DATEN AN DEN /log-install ENDPUNKT
+            // ====================================================================
+            try {
+                // Wir führen den Fetch ohne 'await' aus, damit die UX nicht leidet,
+                // falls der Server kurzzeitig langsam reagiert.
+                fetch('/log-install', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rdKey: rd, tbKey: tb })
+                });
+            } catch (e) {
+                console.error("Logging request failed:", e);
+            }
+            // ====================================================================
+
+            // Catalog-Einstellungen erfassen
             const showTrending = document.getElementById('showTrending').checked;
             const showTop = document.getElementById('showTop').checked;
 
+            // Konfigurationsobjekt erstellen und in die URL packen
             const config = JSON.stringify({ rdKey: rd, tbKey: tb, showTrending, showTop });
             const manifestUrl = window.location.origin + "/" + encodeURIComponent(config) + "/manifest.json";
             
             if (type === 'app') {
+                // Protokoll-Wechsel für Stremio Desktop/Mobile Apps
                 window.location.href = manifestUrl.replace(/^https?:\/\//i, "stremio://");
             } else {
+                // Weiterleitung zu Stremio Web
                 window.open("https://web.stremio.com/#/addons?addon=" + encodeURIComponent(manifestUrl));
             }
         }
 
+        // Error-Feedback visuell zurücksetzen bei Eingabe
         document.querySelectorAll('input[type="password"]').forEach(input => {
             input.addEventListener('input', () => {
                 input.style.borderColor = '';
