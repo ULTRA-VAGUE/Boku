@@ -20,6 +20,18 @@ const manifest = {
     config: [{ key: "apiKey", type: "text", title: "API Key (RD or TB)", required: true }],
     behaviorHints: { configurable: true, configurationRequired: true },
 
+    /****************************************************************************
+     * *
+     * STREMIO-ADDONS.NET VERIFICATION BLOCK (DEV SLOT CLAIM)                  *
+     * DIESEN BLOCK NACH DEM CLAIM EINFACH WIEDER LÖSCHEN                      *
+     * *
+     ****************************************************************************/
+    stremioAddonsConfig: {
+        issuer: "https://stremio-addons.net",
+        signature: "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2In0..CxpA9e3VsFf2BxRPdWFKuw.WTcTXyfiVKcLYL82L6z1gKpmC5BWfJxdoiTZc1YtZhy3lGruacLLFNTGobSQjo5E6r7QJjrcx0a5BigJVEl9IrKxffB4Iory70wyLPy_We0kr6oL-jft3aIcLvE1P24G.adQTwcUzK8X7YXcEPX0TDw"
+    }
+    /****************************************************************************/
+};
 
 const builder = new addonBuilder(manifest);
 
@@ -184,8 +196,7 @@ builder.defineCatalogHandler(async ({ id, extra }) => {
 });
 
 builder.defineMetaHandler(async ({ id }) => {
-    // SICHERHEITSNETZ 1: Ignoriere Fremd-IDs (z.B. tt123456 von IMDB oder kitsu:123),
-    // die Stremio im Hintergrund wahllos an alle Addons abfeuert.
+    // SICHERHEITSNETZ 1: Ignoriere Fremd-IDs (z.B. tt123456 von IMDB oder kitsu:123)
     if (!id.startsWith('anilist:') && !id.startsWith('sukebei:')) {
         return Promise.resolve({ meta: null });
     }
@@ -198,7 +209,7 @@ builder.defineMetaHandler(async ({ id }) => {
         meta = await getAnimeMeta(parts[1]);
         searchTitle = meta ? meta.name : Buffer.from(parts[2], 'base64url').toString('utf8');
         
-        // SICHERHEITSNETZ 2: Wenn AniList fehlschlägt, erzeuge ein valides Minimal-Objekt
+        // SICHERHEITSNETZ 2: Wenn AniList fehlschlägt
         if (!meta) {
             meta = { id, type: 'series', name: searchTitle, poster: generateDynamicPoster(searchTitle) };
         }
@@ -215,12 +226,11 @@ builder.defineMetaHandler(async ({ id }) => {
                 background: malData.background, description: malData.description, episodes: malData.episodes
             };
         } else {
-            // SICHERHEITSNETZ 3: Wenn auch MAL fehlschlägt, erzeuge ein valides Minimal-Objekt
+            // SICHERHEITSNETZ 3: Wenn MAL fehlschlägt
             meta = { id, type: 'series', name: searchTitle.replace(/^\[.*?\]\s*/g, '').trim(), poster: generateDynamicPoster(searchTitle) };
         }
     }
 
-    // Ab hier ist durch das Return am Anfang garantiert, dass "meta" ein Objekt ist.
     meta.type = 'series';
     let epCount = meta.episodes || 1;
 
@@ -251,7 +261,7 @@ builder.defineMetaHandler(async ({ id }) => {
 });
 
 builder.defineStreamHandler(async ({ id, config }) => {
-    // Gleiches Sicherheitsnetz für Streams: Nur anilist und sukebei IDs verarbeiten.
+    // Sicherheitsnetz für Streams
     if (!id.startsWith('anilist:') && !id.startsWith('sukebei:')) {
         return Promise.resolve({ streams: [] });
     }
