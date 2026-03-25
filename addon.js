@@ -13,8 +13,8 @@ const manifest = {
     types: ["movie", "series"],
     idPrefixes: ["anilist:", "sukebei:"],
     catalogs: [
-        { id: "sukebei_trending", type: "series", name: "Trending" },
-        { id: "sukebei_top", type: "series", name: "Top Rated" },
+        { id: "sukebei_trending", type: "series", name: "Yomi Trending" },
+        { id: "sukebei_top", type: "series", name: "Yomi Top Rated" },
         { id: "sukebei_search", type: "series", name: "Yomi Search", extra: [{ name: "search", isRequired: true }] }
     ],
     config: [{ key: "apiKey", type: "text", title: "API Key (RD or TB)", required: true }],
