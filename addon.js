@@ -8,7 +8,7 @@ const manifest = {
     version: "5.1.1",
     name: "Yomi",
     logo: "https://github.com/mralanbourne/Yomi/blob/main/static/yomi.png?raw=true", 
-    description: "Your Ultimate NSFW Sukebei/Nyaa Gateway. Auto-parses all messy uploads as best it can. Always verify torrent titles! Info & Help: github:mralanbourne/Yomi",
+    description: "Your Ultimate NSFW Sukebei Gateway. Auto-parses all messy uploads as best it can. Always verify torrent titles! Info & Help: github:mralanbourne/Yomi",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
     idPrefixes: ["anilist:", "sukebei:"],
