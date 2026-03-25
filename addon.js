@@ -35,10 +35,6 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-/**
- * Parsed die Nutzerkonfiguration (API Keys) sicher aus dem Stremio-Install-Link.
- * Unterstützt Base64 und URL-Encoded Formate.
- */
 function parseConfig(config) {
     if (!config) return {};
     if (typeof config === 'object') return config;
@@ -47,10 +43,6 @@ function parseConfig(config) {
     }
 }
 
-/**
- * Wandelt Größenangaben aus Torrent-Titeln (z.B. "1.5 GiB") in reine Bytes um.
- * Wichtig für die Sortierung der Streams nach Qualität/Größe.
- */
 function parseSizeToBytes(sizeStr) {
     if (!sizeStr) return 0;
     const match = sizeStr.match(/([\d.]+)\s*(GiB|MiB|KiB|GB|MB|KB)/i);
@@ -61,10 +53,6 @@ function parseSizeToBytes(sizeStr) {
     return val;
 }
 
-/**
- * Extrahiert Auflösung (1080p, 4K etc.) und Tags (Uncut, Subbed) aus dem Titel.
- * Wird für die Label-Anzeige in der Stremio-Stream-Liste genutzt.
- */
 function extractTags(title) {
     let res = "SD", lang = "Raw";
     if (/(1080p|1080|FHD)/i.test(title)) res = "1080p";
@@ -77,20 +65,10 @@ function extractTags(title) {
     return { res, lang };
 }
 
-/**
- * Bereinigt die Suchanfrage von Sonderzeichen, bevor sie an die Tracker gesendet wird.
- */
 function sanitizeSearchQuery(title) {
     return title.replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').replace(/\s{2,}/g, ' ').trim();
 }
 
-// ============================================================================
-// MULTI-STAGE PARSING ENGINE
-// ============================================================================
-
-/**
- * Erkennt Batch-Releases anhand von Nummern-Bereichen (z.B. 01-12 oder 1~4).
- */
 function getBatchRange(filename) {
     let clean = filename.replace(/\.(mkv|mp4|avi|wmv|srt|ass|ssa|vtt|sub|idx)$/i, '')
                         .replace(/\b(?:1080|720|480|2160)[pi]\b/gi, '');
@@ -99,12 +77,7 @@ function getBatchRange(filename) {
     return null;
 }
 
-/**
- * Die Kern-Logik: Extrahiert die Episodennummer aus chaotischen Release-Namen.
- * Nutzt Garbage Collection, Explizite Tags und einen Positional-Fallback.
- */
 function extractEpisodeNumber(filename) {
-    // Stage 1: Garbage Collection (Löscht Codecs, Auflösungen und Checksummen)
     let clean = filename.replace(/\.(mkv|mp4|avi|wmv|srt|ass|ssa|vtt|sub|idx)$/i, '')
                         .replace(/\b(?:1080|720|480|2160)[pi]\b/gi, '')
                         .replace(/\b(?:x|h)26[45]\b/gi, '')
@@ -112,19 +85,16 @@ function extractEpisodeNumber(filename) {
                         .replace(/\[[a-fA-F0-9]{8}\]/g, '') 
                         .replace(/\b(?:NC)?(?:OP|ED|Opening|Ending)\s*\d*\b/gi, ' ');
 
-    // Stage 2: Explicit Tags (Sucht nach ep, ova, s01e01)
     const explicitRegex = /(?:ep(?:isode)?\.?\s*|ova\s*|s\d+e)0*(\d+)(?:v\d)?\b/i;
     const explicitMatch = clean.match(explicitRegex);
     if (explicitMatch) return parseInt(explicitMatch[1], 10);
 
-    // Stage 3: Isolation Checks (Sucht nach isolierten Nummern in Klammern oder nach Bindestrichen)
     const dashMatch = clean.match(/(?:^|\s)\-\s+0*(\d+)(?:v\d)?(?:$|\s)/i);
     if (dashMatch) return parseInt(dashMatch[1], 10);
     
     const bracketMatch = clean.match(/\[0*(\d+)(?:v\d)?\]|\(0*(\d+)(?:v\d)?\)/i);
     if (bracketMatch) return parseInt(bracketMatch[1] || bracketMatch[2], 10);
 
-    // Stage 4: Last Number Fallback (Nimmt die letzte alleinstehende Zahl im Titel)
     clean = clean.replace(/[\[\]\(\)\{\}_\-\+~,]/g, ' ').trim();
     const tokens = clean.split(/\s+/);
     
@@ -145,7 +115,6 @@ function isEpisodeMatch(name, requestedEp) {
     const extractedEp = extractEpisodeNumber(name);
     if (extractedEp !== null) return extractedEp === epNum;
 
-    // Fail-Safe für Filme (Episode 1), wenn gar keine Nummer gefunden wurde
     if (epNum === 1 && extractedEp === null) {
         if (/trailer|promo|menu|teaser/i.test(name)) return false;
         return true;
@@ -198,10 +167,6 @@ function generateDynamicPoster(title) {
     return `https://dummyimage.com/600x900/1a1a1a/e91e63.png&text=${text}`;
 }
 
-// ============================================================================
-// HANDLER DEFINITIONEN
-// ============================================================================
-
 builder.defineCatalogHandler(async ({ id, extra }) => {
     if (id === "sukebei_trending") return { metas: await getTrendingAdultAnime(), cacheMaxAge: 43200 };
     if (id === "sukebei_top") return { metas: await getTopAdultAnime(), cacheMaxAge: 43200 };
@@ -231,6 +196,12 @@ builder.defineCatalogHandler(async ({ id, extra }) => {
 });
 
 builder.defineMetaHandler(async ({ id }) => {
+    // SICHERHEITSNETZ 1: Ignoriere Fremd-IDs (z.B. tt123456 von IMDB oder kitsu:123),
+    // die Stremio im Hintergrund wahllos an alle Addons abfeuert.
+    if (!id.startsWith('anilist:') && !id.startsWith('sukebei:')) {
+        return Promise.resolve({ meta: null });
+    }
+
     let meta = null;
     let searchTitle = "";
 
@@ -238,7 +209,11 @@ builder.defineMetaHandler(async ({ id }) => {
         const parts = id.split(':');
         meta = await getAnimeMeta(parts[1]);
         searchTitle = meta ? meta.name : Buffer.from(parts[2], 'base64url').toString('utf8');
-        if (!meta) meta = { id, type: 'series', name: searchTitle };
+        
+        // SICHERHEITSNETZ 2: Wenn AniList fehlschlägt, erzeuge ein valides Minimal-Objekt
+        if (!meta) {
+            meta = { id, type: 'series', name: searchTitle, poster: generateDynamicPoster(searchTitle) };
+        }
     } else if (id.startsWith('sukebei:')) {
         searchTitle = Buffer.from(id.split(':')[1], 'base64url').toString('utf8');
         
@@ -252,14 +227,15 @@ builder.defineMetaHandler(async ({ id }) => {
                 background: malData.background, description: malData.description, episodes: malData.episodes
             };
         } else {
+            // SICHERHEITSNETZ 3: Wenn auch MAL fehlschlägt, erzeuge ein valides Minimal-Objekt
             meta = { id, type: 'series', name: searchTitle.replace(/^\[.*?\]\s*/g, '').trim(), poster: generateDynamicPoster(searchTitle) };
         }
     }
 
+    // Ab hier ist durch das Return am Anfang garantiert, dass "meta" ein Objekt ist.
     meta.type = 'series';
     let epCount = meta.episodes || 1;
 
-    // Dynamische Episodenzählung basierend auf Sukebei Suchergebnissen
     if (epCount === 1 || !meta.episodes) {
         try {
             const torrents = await searchSukebeiForHentai(searchTitle);
@@ -287,6 +263,11 @@ builder.defineMetaHandler(async ({ id }) => {
 });
 
 builder.defineStreamHandler(async ({ id, config }) => {
+    // Gleiches Sicherheitsnetz für Streams: Nur anilist und sukebei IDs verarbeiten.
+    if (!id.startsWith('anilist:') && !id.startsWith('sukebei:')) {
+        return Promise.resolve({ streams: [] });
+    }
+
     const userConfig = parseConfig(config);
     let searchTitle = "", requestedEp = 1;
     
@@ -299,8 +280,6 @@ builder.defineStreamHandler(async ({ id, config }) => {
         searchTitle = sanitizeSearchQuery(Buffer.from(parts[1], 'base64url').toString('utf8'));
         if (parts.length >= 4) requestedEp = parseInt(parts[3], 10);
     }
-
-    // KOMPLETT BEREINIGT: Hier gibt es kein Discord-Logging mehr!
 
     let torrents = await searchSukebeiForHentai(searchTitle);
     if (!torrents.length) return { streams: [], cacheMaxAge: 60 };
