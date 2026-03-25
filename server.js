@@ -15,7 +15,14 @@ const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/148617893794309747
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.static(path.join(__dirname, 'static')));
 app.get('/health', (req, res) => res.status(200).json({ status: 'alive' }));
-app.get('/configure', (req, res) => res.redirect('/'));
+
+// ============================================================================
+// DER FIX FÜR DEN STREMIO VALIDATOR BOT
+// Liefert direkt die HTML-Datei mit einem 200 OK aus, anstatt auf '/' umzuleiten.
+// ============================================================================
+app.get('/configure', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 // ============================================================================
 // NEU: ENDPUNKT FÜR INSTALLATION-LOGGING
