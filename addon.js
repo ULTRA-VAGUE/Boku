@@ -5,7 +5,7 @@ const { checkRD, checkTorbox, getActiveRD, getActiveTorbox } = require('./lib/de
 
 const manifest = {
     id: "org.community.yomi",
-    version: "5.1.1",
+    version: "5.1.5",
     name: "Yomi",
     logo: "https://github.com/mralanbourne/Yomi/blob/main/static/yomi.png?raw=true", 
     description: "Your Ultimate NSFW Sukebei Gateway. Auto-parses all messy uploads as best it can. Always verify torrent titles! Info & Help: github:mralanbourne/Yomi",
