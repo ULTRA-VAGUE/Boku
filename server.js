@@ -1,5 +1,5 @@
 /**
- * YOMI GATEWAY - SERVER CORE
+ * YOMI GATEWAY - SERVER CORE.
  * * This is the entry point of the application. It sets up the Express server,
  * handles static assets, and provides the specialized routes for stream resolution
  * and subtitle proxying.
