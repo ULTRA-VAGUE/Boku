@@ -19,7 +19,7 @@ const { checkRD, checkTorbox, getActiveRD, getActiveTorbox } = require('./lib/de
 // ============================================================================
 const manifest = {
     id: "org.community.yomi",
-    version: "5.2.1",
+    version: "5.2.2",
     name: "Yomi",
     logo: "https://github.com/mralanbourne/Yomi/blob/main/static/yomi.png?raw=true", 
     description: "The ultimate Debrid-powered Sukebei gateway. Streams raw, uncompressed Hentai & NSFW Anime directly via Real-Debrid or Torbox. Smart-parsing tames chaotic torrent names for a clean catalog. Pure quality, zero buffering. Info: github.com/mralanbourne/Yomi",
@@ -119,21 +119,26 @@ function extractEpisodeNumber(filename) {
 
 function isEpisodeMatch(name, requestedEp) {
     const epNum = parseInt(requestedEp, 10);
+    
     // Isolate the filename from the full path to ignore misleading folder names
+    // This prevents Episode 1 from sneaking in when a user clicks Episode 2 in a batch folder.
     const parts = name.split('/');
     const filename = parts[parts.length - 1];
+    
     // Priority Inversion - Always check for a specific episode number FIRST
     const extractedEp = extractEpisodeNumber(filename);
     if (extractedEp !== null) {
     // If the parser found a specific number (e.g. "01"), it MUST match what the user clicked
         return extractedEp === epNum;
     }
+    
     // Only fall back to batch ranges if the file ITSELF has no specific episode number
     // (e.g., the video file itself is named "Anime_01-12.mkv")
     const batch = getBatchRange(filename);
     if (batch && epNum >= batch.start && epNum <= batch.end) {
         return true;
     }
+    
     // Fallback for Single Episodes/Movies
     if (epNum === 1 && extractedEp === null) {
         return !/trailer|promo|menu|teaser|ncop|nced/i.test(filename);
@@ -175,6 +180,7 @@ function generateDynamicPoster(title) {
         } else { line += word + " "; }
     }
     if (line) lines.push(line.trim());
+    
     return `https://dummyimage.com/600x900/1a1a1a/e91e63.png?text=${encodeURIComponent(lines.join('\n'))}`;
 }
 
@@ -228,12 +234,12 @@ builder.defineMetaHandler(async ({ id }) => {
             meta = await getAnimeMeta(parts[1]);
             
             if (meta) {
-                // Strictly force the meta.id to match the requested ID, 
-                // otherwise Stremio drops the payload and shows "Invalid ID".
+                // Strictly force the meta.id to match the requested ID. 
+                // If they don't match exactly, Stremio drops the payload and shows "Invalid ID".
                 meta.id = id; 
                 searchTitle = meta.name;
             } else {
-                // Guard against undefined parts to prevent Node.js TypeErrors
+                // Guard against undefined parts to prevent Node.js TypeErrors crashing the backend
                 searchTitle = parts[2] ? Buffer.from(parts[2], 'base64url').toString('utf8') : "Unknown";
                 meta = { id, type: 'series', name: searchTitle, poster: generateDynamicPoster(searchTitle) };
             }
@@ -278,7 +284,7 @@ builder.defineMetaHandler(async ({ id }) => {
         return { meta, cacheMaxAge: 604800 };
     } catch (err) {
         console.error("Meta handler crashed:", err.message);
-        // Fallback meta so Stremio doesn't hard-crash into Invalid ID if something breaks
+        // Fallback meta so Stremio doesn't hard-crash into "Invalid ID" if an error occurs
         return { 
             meta: { id, type: 'series', name: "Unknown (Error)", poster: generateDynamicPoster("Error") }, 
             cacheMaxAge: 60 
@@ -334,15 +340,53 @@ builder.defineStreamHandler(async ({ id, config }) => {
             const { res, lang } = extractTags(t.title);
             const bytes = parseFloat(t.size) * 1024 * 1024 * 1024;
             
-            const buildSubs = (fileList, provider, apiKey) => {
+            // ==========================================
+            // SUBTITLE ENGINE
+            // ==========================================
+            // Ensure only subtitles matching the current episode are passed to the client.
+            // Add support for 13 distinct languages and appends the file extension to the UI.
+            const buildSubs = (fileList, provider, apiKey, currentEp) => {
                 if (!fileList) return [];
                 return fileList
-                    .filter(f => /\.(ass|srt|ssa|vtt|sub|idx)$/i.test(f.name))
+                    .filter(f => {
+                        const name = f.name || f.path || "";
+                        if (!/\.(ass|srt|ssa|vtt|sub|idx)$/i.test(name)) return false;
+                        
+                        const extEp = extractEpisodeNumber(name);
+                        // If the file explicitly has an episode number, it MUST match
+                        if (extEp !== null) {
+                            return extEp === currentEp;
+                        }
+                        // Fallback: If no number is found (e.g. "eng.srt"), 
+                        // isEpisodeMatch allows it through to prevent dropping valid generic files.
+                        return isEpisodeMatch(name, currentEp);
+                    })
                     .map(f => {
-                        let subLang = 'English';
-                        if (/ger|deu|deutsch/i.test(f.name)) subLang = 'German';
-                        else if (/spa|esp/i.test(f.name)) subLang = 'Spanish';
-                        return { id: f.id, url: `${process.env.BASE_URL}/sub/${provider}/${apiKey}/${t.hash}/${f.id}`, lang: subLang };
+                        let subLang = 'English'; // Default Fallback
+                        const n = (f.name || f.path || "").toLowerCase();
+                        
+                        if (/ger|deu|deutsch/i.test(n)) subLang = 'German';
+                        else if (/spa|esp|spanish/i.test(n)) subLang = 'Spanish';
+                        else if (/rus|russian/i.test(n)) subLang = 'Russian';
+                        else if (/fre|fra|french/i.test(n)) subLang = 'French';
+                        else if (/ita|italian/i.test(n)) subLang = 'Italian';
+                        else if (/por|portuguese/i.test(n)) subLang = 'Portuguese';
+                        else if (/pol|polish/i.test(n)) subLang = 'Polish';
+                        else if (/chi|chinese|zho/i.test(n)) subLang = 'Chinese';
+                        else if (/ara|arabic/i.test(n)) subLang = 'Arabic';
+                        else if (/jpn|japanese/i.test(n)) subLang = 'Japanese';
+                        else if (/kor|korean/i.test(n)) subLang = 'Korean';
+                        else if (/hin|hindi/i.test(n)) subLang = 'Hindi';
+                        else if (/eng|english/i.test(n)) subLang = 'English';
+
+                        const extMatch = n.match(/\.(ass|srt|ssa|vtt|sub|idx)$/);
+                        const ext = extMatch ? extMatch[1].toUpperCase() : 'SUB';
+
+                        return { 
+                            id: f.id, 
+                            url: `${process.env.BASE_URL}/sub/${provider}/${apiKey}/${t.hash}/${f.id}`, 
+                            lang: `${subLang} (${ext})` 
+                        };
                     });
             };
 
@@ -350,14 +394,14 @@ builder.defineStreamHandler(async ({ id, config }) => {
                 const fRD = rdC[hashLow];
                 const prog = rdA[hashLow];
                 const name = (fRD || prog === 100) ? `YOMI [⚡ RD]\n🎥 ${res}` : (prog !== undefined ? `YOMI [⏳ ${prog}% RD]\n🎥 ${res}` : `YOMI [☁️ RD DL]\n🎥 ${res}`);
-                streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/realdebrid/${userConfig.rdKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fRD, 'realdebrid', userConfig.rdKey), behaviorHints: { notWebReady: true, bingeGroup: `rd_${t.hash}` }, _bytes: bytes });
+                streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/realdebrid/${userConfig.rdKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fRD, 'realdebrid', userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `rd_${t.hash}` }, _bytes: bytes });
             }
 
             if (userConfig.tbKey) {
                 const fTB = tbC[hashLow];
                 const prog = tbA[hashLow];
                 const name = (fTB || prog === 100) ? `YOMI [⚡ TB]\n🎥 ${res}` : (prog !== undefined ? `YOMI [⏳ ${prog}% TB]\n🎥 ${res}` : `YOMI [☁️ TB DL]\n🎥 ${res}`);
-                streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/torbox/${userConfig.tbKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fTB, 'torbox', userConfig.tbKey), behaviorHints: { notWebReady: true, bingeGroup: `tb_${t.hash}` }, _bytes: bytes });
+                streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/torbox/${userConfig.tbKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fTB, 'torbox', userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `tb_${t.hash}` }, _bytes: bytes });
             }
         });
 
