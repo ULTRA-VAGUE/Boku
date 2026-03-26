@@ -210,14 +210,32 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
                             if (!selectedIds.includes(f.id)) selectedIds.push(f.id);
                         }
                     });
-
-                    await axios.post('https://api.real-debrid.com/rest/1.0/torrents/selectFiles/' + torrent.id, new URLSearchParams({ files: selectedIds.join(',') }), { headers: { Authorization: `Bearer ${apiKey}` } });
+                    
+                    // Omit the URLSearchParams! We're treating the unformatted commas as a string.
+                    // This ensures that Real-Debrid actually reads and selects all IDs.
+                    const bodyString = 'files=' + selectedIds.join(',');
+                    await axios.post('https://api.real-debrid.com/rest/1.0/torrents/selectFiles/' + torrent.id, bodyString, { 
+                        headers: { 
+                            Authorization: `Bearer ${apiKey}`,
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        } 
+                    });
                 }
                 return serveLoadingVideo(req, res);
             }
+            
             const fresh = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
-            const selIdx = fresh.data.files.findIndex(f => f.selected === 1);
-            const unrestrict = await axios.post('https://api.real-debrid.com/rest/1.0/unrestrict/link', new URLSearchParams({ link: fresh.data.links[selIdx] || fresh.data.links[0] }), { headers: { Authorization: `Bearer ${apiKey}` } });
+            
+
+            // Since we're now downloading multiple files (video + subtitles), fresh.data.links also has multiple entries.
+            // find the link that belongs to the VIDEO, otherwise Stremio will stream a text file.
+            const bestFileFresh = selectEpisodeFile(fresh.data.files, requestedEp);
+            const selectedFiles = fresh.data.files.filter(f => f.selected === 1);
+            let videoIdx = selectedFiles.findIndex(f => f.id === (bestFileFresh ? bestFileFresh.id : -1));
+            
+            if (videoIdx === -1) videoIdx = 0; // Fallback
+
+            const unrestrict = await axios.post('https://api.real-debrid.com/rest/1.0/unrestrict/link', new URLSearchParams({ link: fresh.data.links[videoIdx] }), { headers: { Authorization: `Bearer ${apiKey}` } });
             return res.redirect(unrestrict.data.download);
         }
         if (provider === "torbox") {
