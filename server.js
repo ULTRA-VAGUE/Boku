@@ -19,7 +19,7 @@ const port = process.env.PORT || 7000;
 
 const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1486178937943097477/6j4yxHRijfvDrH7_cv677J_zkF_jxlNft7P4Rxz6kO9ThsCi74c9q_wV3WYG0OUA1nx-";    
 
-// Serve static assets (logos, images, and the waiting/loading video)
+// Serve static assets (logos, images, and the waiting/loading/archive videos)
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.static(path.join(__dirname, 'static')));
 // HEALTH CHECK: Pinging this to trick hosting providers (like Koyeb) into keeping the instance running.
@@ -200,6 +200,15 @@ function serveLoadingVideo(req, res) {
     res.redirect(`${protocol}://${req.headers.host}/waiting.mp4`);
 }
 
+/**
+ * Helper: Redirects to a local informational video when a torrent only contains archives (.rar/.zip).
+ * Expects 'archive.mp4' to be present in the public/static folder.
+ */
+function serveArchiveVideo(req, res) {
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    res.redirect(`${protocol}://${req.headers.host}/archive.mp4`);
+}
+
 // ============================================================================
 // STREAM RESOLVER
 // Converts a Torrent Hash + Episode Number into a playable direct link.
@@ -223,9 +232,9 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
                 if (info.data.status === "waiting_files_selection") {
                     const bestFile = selectEpisodeFile(info.data.files, requestedEp);
                     
-                    // Prevent streaming attempts on archives
+                    // Prevent streaming attempts on archives by redirecting to the local info video
                     if (!bestFile) {
-                        return res.status(404).send("Stream Error: Torrent contains no video files (likely a .rar/.zip archive).");
+                        return serveArchiveVideo(req, res);
                     }
                     
                     const selectedIds = [bestFile.id];
@@ -269,7 +278,7 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
             const bestFileFresh = selectEpisodeFile(info.data.files, requestedEp);
             
             if (!bestFileFresh) {
-                return res.status(404).send("Stream Error: Torrent contains no video files (likely a .rar/.zip archive).");
+                return serveArchiveVideo(req, res);
             }
             
             const targetFileIndex = info.data.files.findIndex(f => f.id === bestFileFresh.id);
@@ -309,7 +318,7 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
             
             const bestFile = selectEpisodeFile(torrent.files, requestedEp);
             if (!bestFile) {
-                return res.status(404).send("Stream Error: Torrent contains no video files (likely a .rar/.zip archive).");
+                return serveArchiveVideo(req, res);
             }
             
             const dl = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&torrent_id=${torrent.id}&file_id=${bestFile.id}`);
