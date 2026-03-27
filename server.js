@@ -211,7 +211,8 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
                 const add = await axios.post('https://api.real-debrid.com/rest/1.0/torrents/addMagnet', new URLSearchParams({ magnet }), { headers: { Authorization: `Bearer ${apiKey}` } });
                 torrent = { id: add.data.id };
             }
-            const info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+            
+            let info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
             
             if (info.data.status !== "downloaded") {
                 if (info.data.status === "waiting_files_selection") {
@@ -223,7 +224,6 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
 
                     // Blindly collect ALL subtitle files in the entire torrent
                     // and force Real-Debrid to cache them alongside the selected video file.
-                    // This prevents external subtitle files from being dropped during initial RD caching.
                     info.data.files.forEach(f => {
                         const name = (f.path || f.name || "").toLowerCase();
                         if (/\.(ass|srt|ssa|vtt|sub|idx)$/.test(name)) {
@@ -240,32 +240,44 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
                             'Content-Type': 'application/x-www-form-urlencoded'
                         } 
                     });
+
+                    // TANK MODE FIX: RD needs a brief moment to assign the cached files to the account and generate links.
+                    // Instead of instantly returning the placeholder, we pause for 1.5 seconds and re-fetch the info.
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
                 }
-                return serveLoadingVideo(req, res);
+                
+                // If it's STILL not downloaded after the pause (e.g., it wasn't 100% cached), return the loading video.
+                if (info.data.status !== "downloaded") {
+                    return serveLoadingVideo(req, res);
+                }
             }
-            
-            const fresh = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
             
             // Robust Link Selection
             // We explicitly match the generated RD link with the selected video file.
             // Since fresh.data.links only contains links for *selected* files, their order 
             // does not always perfectly match the raw files array. We must count manually.
-            const bestFileFresh = selectEpisodeFile(fresh.data.files, requestedEp);
-            const targetFileIndex = fresh.data.files.findIndex(f => f.id === (bestFileFresh ? bestFileFresh.id : -1));
+            const bestFileFresh = selectEpisodeFile(info.data.files, requestedEp);
+            const targetFileIndex = info.data.files.findIndex(f => f.id === (bestFileFresh ? bestFileFresh.id : -1));
             
-            let targetLink = fresh.data.links[0]; // Absolute Fallback
+            let targetLink = info.data.links[0]; // Absolute Fallback
             
             if (targetFileIndex !== -1) {
                 let linkCounter = 0;
-                for (let i = 0; i < fresh.data.files.length; i++) {
+                for (let i = 0; i < info.data.files.length; i++) {
                     if (i === targetFileIndex) {
-                        targetLink = fresh.data.links[linkCounter];
+                        targetLink = info.data.links[linkCounter];
                         break;
                     }
-                    if (fresh.data.files[i].selected === 1) {
+                    if (info.data.files[i].selected === 1) {
                         linkCounter++;
                     }
                 }
+            }
+
+            // Fallback safety net in case RD failed to generate any links
+            if (!targetLink) {
+                 return serveLoadingVideo(req, res);
             }
 
             const unrestrict = await axios.post('https://api.real-debrid.com/rest/1.0/unrestrict/link', new URLSearchParams({ link: targetLink }), { headers: { Authorization: `Bearer ${apiKey}` } });
