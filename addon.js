@@ -54,7 +54,7 @@ function parseConfig(config) {
 }
 
 /**
- * Converts torrent size strings (e.g., "1.5 GiB") into raw bytes for sorting.
+ * Converts torrent size strings (e.g., "1.5 GiB") into raw bytes for sorting
  */
 function parseSizeToBytes(sizeStr) {
     if (!sizeStr) return 0;
