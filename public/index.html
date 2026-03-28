@@ -4,11 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Yomi Setup | Forbidden Gateway</title>
-    
+
     <link rel="icon" type="image/png" href="/yomi.png">
-    
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Kaisei+Tokumin:wght@400;700;800&family=Space+Mono&display=swap" rel="stylesheet">
+
     <style>
         body {
             font-family: 'Kaisei Tokumin', serif;
@@ -20,7 +20,7 @@
             background-size: 100% 100%;
             animation: backgroundShift 15s ease-in-out infinite alternate;
         }
-        
+
         @keyframes backgroundShift {
             0% { background-position: 0% 50%; }
             100% { background-position: 100% 50%; }
@@ -83,7 +83,6 @@
             background-color: rgba(0, 0, 0, 0.7);
         }
 
-        /* Custom UI Checkbox matching the Glass Design */
         .glass-checkbox {
             appearance: none;
             width: 1.25rem;
@@ -150,9 +149,22 @@
 
         .show-modal { display: flex !important; opacity: 1 !important; }
         .show-modal .modal-card { transform: scale(1) !important; }
+
+        .copy-box::-webkit-scrollbar {
+            height: 4px;
+        }
+        .copy-box::-webkit-scrollbar-thumb {
+            background: rgba(233, 30, 99, 0.5);
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body class="text-gray-300 min-h-screen flex items-center justify-center p-4 overflow-hidden relative border-t-2 border-pink-500/10">
+
+    <div class="absolute top-6 right-6 flex items-center space-x-3 bg-black/50 backdrop-blur-md border border-white/5 rounded-full px-4 py-2 z-50">
+        <div id="statusDot" class="w-2.5 h-2.5 rounded-full bg-gray-500 animate-pulse"></div>
+        <span id="statusText" class="text-[10px] font-mono tracking-widest uppercase text-gray-400">Checking Sukebei...</span>
+    </div>
 
     <div class="bg-logo-container">
         <img src="/yomi_large.png" class="bg-logo" alt="">
@@ -161,8 +173,8 @@
     <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-pink-600/10 rounded-full mix-blend-screen filter blur-[100px] opacity-40 animate-pulse"></div>
     <div class="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-600/10 rounded-full mix-blend-screen filter blur-[100px] opacity-40 animate-pulse" style="animation-delay: 2s;"></div>
 
-    <div class="glass-card p-12 rounded-[2.5rem] max-w-md w-full relative z-10 text-center">
-        
+    <div class="glass-card p-12 rounded-[2.5rem] max-w-md w-full relative z-10 text-center mt-8">
+
         <div class="mb-14">
             <h1 class="text-6xl font-extrabold tracking-tighter mb-2 neon-text">YOMI</h1>
             <p class="slogan-calligraphy mt-2">Your Sukebei Gateway</p>
@@ -172,7 +184,7 @@
         <div class="space-y-6">
             <input type="password" id="rdKey" placeholder="Real-Debrid Key" 
                 class="w-full input-glass rounded-2xl px-6 py-5 text-white placeholder-gray-700 outline-none transition-all duration-300 input-glow font-mono text-sm tracking-widest">
-            
+
             <input type="password" id="tbKey" placeholder="Torbox Key" 
                 class="w-full input-glass rounded-2xl px-6 py-5 text-white placeholder-gray-700 outline-none transition-all duration-300 input-glow font-mono text-sm tracking-widest">
 
@@ -195,9 +207,21 @@
                     open in stremio web
                 </button>
             </div>
+            
+            <div class="pt-4 border-t border-white/5 mt-4">
+                <p class="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-2 text-left px-2">For Nuvio & Other Clients:</p>
+                <div class="relative group">
+                    <div id="manifestUrlDisplay" class="copy-box w-full input-glass rounded-xl px-4 py-3 text-gray-400 font-mono text-[10px] text-left overflow-x-auto whitespace-nowrap opacity-50 transition-opacity select-all">
+                        Enter an API key to generate URL...
+                    </div>
+                    <button onclick="copyManifest()" id="copyBtn" class="absolute right-2 top-1/2 transform -translate-y-1/2 bg-gray-800/80 hover:bg-pink-600 text-white p-1.5 rounded-lg transition-all opacity-0 group-hover:opacity-100 disabled:opacity-0" disabled title="Copy to clipboard">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                    </button>
+                </div>
+            </div>
         </div>
 
-        <div class="mt-12 pt-8 border-t border-gray-900 flex justify-center space-x-12 opacity-40 hover:opacity-100 transition-opacity duration-700">
+        <div class="mt-8 pt-8 border-t border-gray-900 flex justify-center space-x-12 opacity-40 hover:opacity-100 transition-opacity duration-700">
             <a href="https://github.com/mralanbourne/Yomi" target="_blank" class="text-gray-600 hover:text-white transition-all transform hover:scale-110">
                 <svg class="h-6 w-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
             </a>
@@ -218,6 +242,7 @@
     </div>
 
     <script>
+        
         function showModal() {
             document.getElementById('modal-overlay').classList.add('show-modal');
         }
@@ -226,61 +251,32 @@
             document.getElementById('modal-overlay').classList.remove('show-modal');
         }
 
-        /**
-         * Hauptfunktion für die Installation.
-         * Sendet asynchron Daten an den Server zum Loggen und leitet dann zu Stremio weiter.
-         */
-        async function install(type) {
+        function generateManifestUrl() {
             const rd = document.getElementById('rdKey').value.trim();
             const tb = document.getElementById('tbKey').value.trim();
-            
-            if (!rd && !tb) {
-                const card = document.querySelector('.glass-card');
-                card.style.borderColor = '#e91e63';
-                setTimeout(() => card.style.borderColor = '', 1000);
-                showModal();
-                return;
-            }
-
-            // ====================================================================
-            // LOGGING-BLOCK: SENDET DATEN AN DEN /log-install ENDPUNKT
-            // ====================================================================
-            try {
-                // Wir führen den Fetch ohne 'await' aus, damit die UX nicht leidet,
-                // falls der Server kurzzeitig langsam reagiert.
-                fetch('/log-install', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ rdKey: rd, tbKey: tb })
-                });
-            } catch (e) {
-                console.error("Logging request failed:", e);
-            }
-            // ====================================================================
-
-            // Catalog-Einstellungen erfassen
             const showTrending = document.getElementById('showTrending').checked;
             const showTop = document.getElementById('showTop').checked;
+            
+            const displayBox = document.getElementById('manifestUrlDisplay');
+            const copyBtn = document.getElementById('copyBtn');
 
-            // Konfigurationsobjekt erstellen und in die URL packen
+            if (!rd && !tb) {
+                displayBox.textContent = "Enter an API key to generate URL...";
+                displayBox.style.opacity = '0.5';
+                copyBtn.disabled = true;
+                return null;
+            }
+
             const config = JSON.stringify({ rdKey: rd, tbKey: tb, showTrending, showTop });
             const manifestUrl = window.location.origin + "/" + encodeURIComponent(config) + "/manifest.json";
             
-            if (type === 'app') {
-                // Protokoll-Wechsel für Stremio Desktop/Mobile Apps
-                window.location.href = manifestUrl.replace(/^https?:\/\//i, "stremio://");
-            } else {
-                // Weiterleitung zu Stremio Web
-                window.open("https://web.stremio.com/#/addons?addon=" + encodeURIComponent(manifestUrl));
-            }
+            displayBox.textContent = manifestUrl;
+            displayBox.style.opacity = '1';
+            copyBtn.disabled = false;
+            
+            return manifestUrl;
         }
 
-        // Error-Feedback visuell zurücksetzen bei Eingabe
-        document.querySelectorAll('input[type="password"]').forEach(input => {
-            input.addEventListener('input', () => {
-                input.style.borderColor = '';
-            });
-        });
-    </script>
-</body>
-</html>
+        function copyManifest() {
+            const url = generateManifestUrl();
+            if (
