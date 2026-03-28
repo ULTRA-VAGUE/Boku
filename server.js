@@ -33,6 +33,32 @@ app.get('/configure', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+//============================================================================
+// SUKEBEI STATUS CHECK
+// Pings Sukebei and caches the result for 5 minutes to prevent rate limiting
+//============================================================================
+let sukebeiCache = { status: 'checking', timestamp: 0 };
+
+app.get('/sukebei-status', async (req, res) => {
+    const now = Date.now();
+    // Cache duration: 5 minutes (300000 ms)
+    if (now - sukebeiCache.timestamp < 300000 && sukebeiCache.status !== 'checking') {
+        return res.json({ status: sukebeiCache.status });
+    }
+    
+    try {
+        await axios.get('https://sukebei.nyaa.si', { 
+            timeout: 8000,
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        });
+        sukebeiCache = { status: 'online', timestamp: now };
+        res.json({ status: 'online' });
+    } catch (error) {
+        sukebeiCache = { status: 'offline', timestamp: now };
+        res.json({ status: 'offline' });
+    }
+});
+
 // ============================================================================
 // NEW: INSTALLATION LOGGING ENDPOINT
 // ============================================================================
@@ -259,7 +285,7 @@ app.get('/resolve/:provider/:apiKey/:hash/:episode?', async (req, res) => {
                         } 
                     });
 
-                    // TANK MODE FIX: RD needs a brief moment to assign the cached files to the account and generate links.
+                    // RD needs a brief moment to assign the cached files to the account and generate links.
                     // Instead of instantly returning the placeholder, we pause for 1.5 seconds and re-fetch the info.
                     await new Promise(resolve => setTimeout(resolve, 1500));
                     info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
