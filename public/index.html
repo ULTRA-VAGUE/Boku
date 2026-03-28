@@ -211,9 +211,7 @@
             <div class="pt-4 border-t border-white/5 mt-4">
                 <p class="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-2 text-left px-2">For Nuvio & Other Clients:</p>
                 <div class="relative group">
-                    <div id="manifestUrlDisplay" class="copy-box w-full input-glass rounded-xl px-4 py-3 text-gray-400 font-mono text-[10px] text-left overflow-x-auto whitespace-nowrap opacity-50 transition-opacity select-all">
-                        Enter an API key to generate URL...
-                    </div>
+                    <input type="text" id="manifestUrlDisplay" readonly value="Enter an API key to generate URL..." class="copy-box w-full input-glass rounded-xl px-4 py-3 text-gray-400 font-mono text-[10px] text-left outline-none opacity-50 cursor-pointer selection:bg-pink-500/30 transition-opacity">
                     <button onclick="copyManifest()" id="copyBtn" class="absolute right-2 top-1/2 transform -translate-y-1/2 bg-gray-800/80 hover:bg-pink-600 text-white p-1.5 rounded-lg transition-all opacity-0 group-hover:opacity-100 disabled:opacity-0" disabled title="Copy to clipboard">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
                     </button>
@@ -242,7 +240,6 @@
     </div>
 
     <script>
-        
         function showModal() {
             document.getElementById('modal-overlay').classList.add('show-modal');
         }
@@ -261,16 +258,16 @@
             const copyBtn = document.getElementById('copyBtn');
 
             if (!rd && !tb) {
-                displayBox.textContent = "Enter an API key to generate URL...";
+                displayBox.value = "Enter an API key to generate URL...";
                 displayBox.style.opacity = '0.5';
                 copyBtn.disabled = true;
                 return null;
             }
 
             const config = JSON.stringify({ rdKey: rd, tbKey: tb, showTrending, showTop });
-            const manifestUrl = window.location.origin + "/" + encodeURIComponent(config) + "/manifest.json";
+            const manifestUrl = window.location.protocol + "//" + window.location.host + "/" + encodeURIComponent(config) + "/manifest.json";
             
-            displayBox.textContent = manifestUrl;
+            displayBox.value = manifestUrl;
             displayBox.style.opacity = '1';
             copyBtn.disabled = false;
             
@@ -278,5 +275,87 @@
         }
 
         function copyManifest() {
-            const url = generateManifestUrl();
-            if (
+            const copyText = document.getElementById("manifestUrlDisplay");
+            if (copyText && !copyText.value.includes("Enter an API key")) {
+                copyText.select();
+                copyText.setSelectionRange(0, 99999);
+                try {
+                    navigator.clipboard.writeText(copyText.value).then(flashSuccess);
+                } catch (err) {
+                    document.execCommand('copy');
+                    flashSuccess();
+                }
+            }
+        }
+
+        function flashSuccess() {
+            const btn = document.getElementById('copyBtn');
+            const originalIcon = btn.innerHTML;
+            btn.innerHTML = '<svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>';
+            setTimeout(() => { btn.innerHTML = originalIcon; }, 2000);
+        }
+
+        async function checkSukebeiStatus() {
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+            
+            try {
+                const response = await fetch('/sukebei-status', { method: 'GET', cache: 'no-store' });
+                const data = await response.json();
+                
+                if (data.status === 'online') {
+                    dot.className = "w-2.5 h-2.5 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]";
+                    text.textContent = "Sukebei: Online";
+                    text.className = "text-[10px] font-mono tracking-widest uppercase text-green-400";
+                } else {
+                    throw new Error("Offline");
+                }
+            } catch (error) {
+                dot.className = "w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_#ef4444]";
+                text.textContent = "Sukebei: Unreachable";
+                text.className = "text-[10px] font-mono tracking-widest uppercase text-red-400";
+            }
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+            document.getElementById('rdKey').addEventListener('input', generateManifestUrl);
+            document.getElementById('tbKey').addEventListener('input', generateManifestUrl);
+            document.getElementById('showTrending').addEventListener('change', generateManifestUrl);
+            document.getElementById('showTop').addEventListener('change', generateManifestUrl);
+            
+            document.getElementById("manifestUrlDisplay").addEventListener("click", function() {
+                if (!this.value.includes("Enter an API key")) {
+                    this.select();
+                }
+            });
+
+            checkSukebeiStatus();
+            setInterval(checkSukebeiStatus, 300000);
+            
+            document.querySelectorAll('input[type="password"]').forEach(input => {
+                input.addEventListener('input', () => {
+                    input.style.borderColor = '';
+                });
+            });
+        });
+
+        function install(type) {
+            const manifestUrl = generateManifestUrl();
+
+            if (!manifestUrl) {
+                const card = document.querySelector('.glass-card');
+                card.style.borderColor = '#e91e63';
+                setTimeout(() => card.style.borderColor = '', 1000);
+                showModal();
+                return;
+            }
+
+            if (type === 'app') {
+                window.location.href = manifestUrl.replace(/^https?:\/\//i, "stremio://");
+            } else {
+                window.open("https://web.stremio.com/#/addons?addon=" + encodeURIComponent(manifestUrl));
+            }
+        }
+    </script>
+</body>
+</html>
