@@ -366,7 +366,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
             const isBatch = getBatchRange(t.title) !== null;
             const batchIndicator = isBatch ? "📦 BATCH" : "🎬 EPISODE";
             
-            let displayTitle = "🌐 Sukebei Network | " + batchIndicator + "\n💾 " + t.size + " | 👤 " + t.seeders;
+            let displayTitle = "🌐 Sukebei | " + batchIndicator + "\n💾 " + t.size + " | 👤 " + t.seeders;
             
             let matchedFileName = undefined;
 
