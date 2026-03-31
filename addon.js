@@ -89,11 +89,21 @@ function generateDynamicPoster(title) {
 // STREMIO HANDLERS
 //===============
 
-builder.defineCatalogHandler(async ({ id, extra }) => {
+// The catalog handler extracts the user's config
+builder.defineCatalogHandler(async ({ id, extra, config }) => {
     console.log(`[Catalog Request] Fetching catalog: ${id}`);
     
-    if (id === "sukebei_trending") return { metas: await getTrendingAdultAnime(), cacheMaxAge: 43200 };
-    if (id === "sukebei_top") return { metas: await getTopAdultAnime(), cacheMaxAge: 43200 };
+    const userConfig = parseConfig(config);
+    
+    if (id === "sukebei_trending") {
+        if (userConfig.showTrending === false) return { metas: [] };
+        return { metas: await getTrendingAdultAnime(), cacheMaxAge: 43200 };
+    }
+    
+    if (id === "sukebei_top") {
+        if (userConfig.showTop === false) return { metas: [] };
+        return { metas: await getTopAdultAnime(), cacheMaxAge: 43200 };
+    }
     
     if (id === "sukebei_search" && extra.search) {
         const [anilistMetas, sukebeiTorrents] = await Promise.all([
