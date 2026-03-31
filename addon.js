@@ -1,22 +1,18 @@
-/**
- * YOMI STREMIO ADDON - CORE LOGIC
- * * This is the main entry point for the Stremio Addon logic.
- * It defines how the addon interacts with Stremio via the SDK.
- * * Key Responsibilities:
- * 1. Metadata Handling (AniList/MAL integration)
- * 2. Catalog Management (Trending, Top Rated, Search)
- * 3. Stream Resolution (Searching Sukebei and verifying Debrid availability)
- * 4. Episode Extraction (Parsing messy torrent titles)
- */
+//===============
+// YOMI STREMIO ADDON - CORE LOGIC
+// This is the main entry point for the Stremio Addon logic.
+// It defines how the addon interacts with Stremio via the SDK.
+//===============
 
 const { addonBuilder } = require("stremio-addon-sdk");
-const { searchAdultAnime, getAnimeMeta, getTrendingAdultAnime, getTopAdultAnime, getJikanMeta } = require('./lib/anilist');
-const { searchSukebeiForHentai, cleanTorrentTitle } = require('./lib/sukebei');
-const { checkRD, checkTorbox, getActiveRD, getActiveTorbox } = require('./lib/debrid');
+const { searchAdultAnime, getAnimeMeta, getTrendingAdultAnime, getTopAdultAnime, getJikanMeta } = require("./lib/anilist");
+const { searchSukebeiForHentai, cleanTorrentTitle } = require("./lib/sukebei");
+const { checkRD, checkTorbox, getActiveRD, getActiveTorbox } = require("./lib/debrid");
+const { extractEpisodeNumber, getBatchRange, isEpisodeMatch, selectBestVideoFile } = require("./lib/parser");
 
-// ============================================================================
+//===============
 // ADDON MANIFEST
-// ============================================================================
+//===============
 const manifest = {
     id: "org.community.yomi",
     version: "5.2.3",
@@ -37,39 +33,16 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// ============================================================================
-// UTILITY FUNCTIONS: CONFIGURATION & PARSING
-// ============================================================================
-
-/**
- * Safely parses the user's Debrid configuration from the URL.
- * Supports both Base64 and standard URI encoding.
- */
+// Safely parses the user's Debrid configuration from the URL.
 function parseConfig(config) {
     if (!config) return {};
-    if (typeof config === 'object') return config;
-    try { return JSON.parse(Buffer.from(config, 'base64').toString()); } catch (e) {
+    if (typeof config === "object") return config;
+    try { return JSON.parse(Buffer.from(config, "base64").toString()); } catch (e) {
         try { return JSON.parse(decodeURIComponent(config)); } catch (e2) { return {}; }
     }
 }
 
-/**
- * Converts torrent size strings (e.g., "1.5 GiB") into raw bytes for sorting
- */
-function parseSizeToBytes(sizeStr) {
-    if (!sizeStr) return 0;
-    const match = sizeStr.match(/([\d.]+)\s*(GiB|MiB|KiB|GB|MB|KB)/i);
-    if (!match) return 0;
-    const val = parseFloat(match[1]);
-    if (match[2].toLowerCase().includes('g')) return val * 1073741824;
-    if (match[2].toLowerCase().includes('m')) return val * 1048576;
-    return val;
-}
-
-/**
- * Scans titles for quality (1080p, 4K) and language tags (Sub, Uncen).
- * Used for visual labels in the Stremio stream list.
- */
+// Scans titles for quality and language tags.
 function extractTags(title) {
     let res = "SD", lang = "Raw";
     if (/(1080p|1080|FHD)/i.test(title)) res = "1080p";
@@ -84,105 +57,9 @@ function extractTags(title) {
     return { res, lang };
 }
 
-/**
- * Removes brackets and excess space from titles to optimize tracker search results.
- */
+// Removes brackets and excess space from titles.
 function sanitizeSearchQuery(title) {
-    return title.replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').replace(/\s{2,}/g, ' ').trim();
-}
-
-// ============================================================================
-// ADVANCED EPISODE EXTRACTION ENGINE
-// ============================================================================
-/**
- * Detects if a filename represents a "Batch" (e.g., "01-12") or a single episode.
- */
-function getBatchRange(filename) {
-    let clean = filename.replace(/\.(mkv|mp4|avi|wmv|srt|ass|ssa|vtt|sub|idx)$/i, '')
-                        .replace(/\b(?:1080|720|480|2160)[pi]\b/gi, '');
-    const batchMatch = clean.match(/\b0*(\d+)\s*(?:-|~|to)\s*0*(\d+)\b/i);
-    if (batchMatch) return { start: parseInt(batchMatch[1], 10), end: parseInt(batchMatch[2], 10) };
-    return null;
-}
-
-/**
- * Core Logic: Extracts an episode number from a messy torrent filename.
- * Uses a multi-stage regex approach: Explicit tags -> Dash separation -> Positional fallback.
- */
-function extractEpisodeNumber(filename) {
-    // Stage 1: Strip common technical noise
-    let clean = filename.replace(/\.(mkv|mp4|avi|wmv|srt|ass|ssa|vtt|sub|idx)$/i, '')
-                        .replace(/\b(?:1080|720|480|2160)[pi]\b/gi, '')
-                        .replace(/\b(?:x|h)26[45]\b/gi, '')
-                        .replace(/\b(?:HEVC|AVC|FHD|HD|SD|10bit|8bit|10-bit|8-bit)\b/gi, '')
-                        .replace(/\[[a-fA-F0-9]{8}\]/g, '') 
-                        .replace(/\b(?:NC)?(?:OP|ED|Opening|Ending)\s*\d*\b/gi, ' ');
-    
-    // Stage 2: Explicit Markers (ep, episode, ova, s01e01)
-    const explicitRegex = /(?:ep(?:isode)?\.?\s*|ova\s*|s\d+e)0*(\d+)(?:v\d)?\b/i;
-    const explicitMatch = clean.match(explicitRegex);
-    if (explicitMatch) return parseInt(explicitMatch[1], 10);
-    // Stage 3: Isolation Checks (e.g. " - 01 ")
-    const dashMatch = clean.match(/(?:^|\s)\-\s+0*(\d+)(?:v\d)?(?:$|\s)/i);
-    if (dashMatch) return parseInt(dashMatch[1], 10);
-    
-    const bracketMatch = clean.match(/\[0*(\d+)(?:v\d)?\]|\(0*(\d+)(?:v\d)?\)/i);
-    if (bracketMatch) return parseInt(bracketMatch[1] || bracketMatch[2], 10);
-    // Stage 4: Positional Fallback (Takes the last isolated number)
-    clean = clean.replace(/[\[\]\(\)\{\}_\-\+~,]/g, ' ').trim();
-    const tokens = clean.split(/\s+/);
-    for (let i = tokens.length - 1; i >= 0; i--) {
-        const token = tokens[i];
-        const numMatch = token.match(/^0*(\d+)(?:v\d)?$/i);
-        if (numMatch) return parseInt(numMatch[1], 10);
-    }
-    return null;
-}
-
-/**
- * Checks if a filename matches the requested episode, accounting for Batches.
- */
-function isEpisodeMatch(name, requestedEp) {
-    const epNum = parseInt(requestedEp, 10);
-    // Isolate the filename from the full path to ignore misleading folder names
-    const parts = name.split('/');
-    const filename = parts[parts.length - 1];
-    // Priority Inversion - Always check for a specific episode number FIRST
-    const extractedEp = extractEpisodeNumber(filename);
-    if (extractedEp !== null) {
-    // If the parser found a specific number (e.g. "01"), it MUST match what the user clicked
-        return extractedEp === epNum;
-    }
-    // Only fall back to batch ranges if the file ITSELF has no specific episode number
-    // (e.g., the video file itself is named "Anime_01-12.mkv")
-    const batch = getBatchRange(filename);
-    if (batch && epNum >= batch.start && epNum <= batch.end) {
-        return true;
-    }
-    // Fallback for Single Episodes/Movies
-    if (epNum === 1 && extractedEp === null) {
-        return !/trailer|promo|menu|teaser|ncop|nced/i.test(filename);
-    }
-    return false;
-}
-
-/**
- * Selects the best video file from a torrent's file list based on quality and matching.
- */
-function findEpisodeInFiles(files, requestedEp) {
-    if (!files || files.length === 0) return null;
-    const videoFiles = files.filter(f => /\.(mkv|mp4|avi|wmv)$/i.test(f.name));
-    const matches = videoFiles.filter(f => isEpisodeMatch(f.name, requestedEp));
-    
-    if (matches.length > 0) {
-        return matches.sort((a, b) => {
-            const aMkv = a.name.toLowerCase().endsWith('.mkv') ? 1 : 0;
-            const bMkv = b.name.toLowerCase().endsWith('.mkv') ? 1 : 0;
-            if (aMkv !== bMkv) return bMkv - aMkv;
-            return (b.size || 0) - (a.size || 0);
-        })[0];
-    }
-    return (videoFiles.length === 1 && parseInt(requestedEp, 10) === 1) ? videoFiles[0] : null;
+    return title.replace(/\(.*?\)/g, "").replace(/\[.*?\]/g, "").replace(/\s{2,}/g, " ").trim();
 }
 
 function isTitleMatchingEpisode(title, requestedEp) {
@@ -190,12 +67,10 @@ function isTitleMatchingEpisode(title, requestedEp) {
     return isEpisodeMatch(title, requestedEp);
 }
     
-/**
- * Generates an image-based placeholder poster for series not found in metadata APIs.
- */
+// Generates an image-based placeholder poster for missing metadata.
 function generateDynamicPoster(title) {
-    let clean = title.replace(/^\[.*?\]\s*/g, '').replace(/\[.*?\]/g, ' ').replace(/\(.*?\)/g, ' ');
-    let safeTitle = clean.replace(/[^a-zA-Z0-9 ]/g, "").replace(/\s{2,}/g, ' ').substring(0, 30).trim().toUpperCase();
+    let clean = title.replace(/^\[.*?\]\s*/g, "").replace(/\[.*?\]/g, " ").replace(/\(.*?\)/g, " ");
+    let safeTitle = clean.replace(/[^a-zA-Z0-9 ]/g, "").replace(/\s{2,}/g, " ").substring(0, 30).trim().toUpperCase();
     let words = safeTitle.split(" ");
     let lines = [];
     let line = "";
@@ -207,17 +82,13 @@ function generateDynamicPoster(title) {
     }
     if (line) lines.push(line.trim());
     
-    // Replaced &text with ?text for valid URL syntax to prevent Stremio rejecting the metadata
-    return `https://dummyimage.com/600x900/1a1a1a/e91e63.png?text=${encodeURIComponent(lines.join('\n'))}`;
+    return `https://dummyimage.com/600x900/1a1a1a/e91e63.png?text=${encodeURIComponent(lines.join("\n"))}`;
 }
 
-// ============================================================================
+//===============
 // STREMIO HANDLERS
-// ============================================================================
+//===============
 
-/** * CATALOG HANDLER
- * Provides lists of Anime to the Stremio UI (Trending, Top, Search).
- */
 builder.defineCatalogHandler(async ({ id, extra }) => {
     console.log(`[Catalog Request] Fetching catalog: ${id}`);
     
@@ -240,9 +111,9 @@ builder.defineCatalogHandler(async ({ id, extra }) => {
         Object.keys(rawGroups).forEach(cleanName => {
             if (!anilistMetas.some(m => m.name.toLowerCase().includes(cleanName.toLowerCase()))) {
                 finalMetas.push({ 
-                    id: `sukebei:${Buffer.from(cleanName).toString('base64url')}`, 
-                    type: 'series', 
-                    name: cleanName.replace(/^\[.*?\]\s*/g, '').trim(), 
+                    id: `sukebei:${Buffer.from(cleanName).toString("base64url")}`, 
+                    type: "series", 
+                    name: cleanName.replace(/^\[.*?\]\s*/g, "").trim(), 
                     poster: generateDynamicPoster(cleanName) 
                 });
             }
@@ -252,13 +123,8 @@ builder.defineCatalogHandler(async ({ id, extra }) => {
     return { metas: [] };
 });
 
-/**
- * META HANDLER
- * Fetches detailed info (poster, description, video list) for a specific series.
- */
 builder.defineMetaHandler(async ({ id }) => {
-// SECURITY GUARD: Ignore external IDs (IMDB, etc.) that Stremio sends in the background.
-    if (!id.startsWith('anilist:') && !id.startsWith('sukebei:')) {
+    if (!id.startsWith("anilist:") && !id.startsWith("sukebei:")) {
         return Promise.resolve({ meta: null });
     }
 
@@ -268,13 +134,10 @@ builder.defineMetaHandler(async ({ id }) => {
     let searchTitle = "";
 
     try {
-        if (id.startsWith('anilist:')) {
-            const parts = id.split(':');
-            
-            // Robust parsing for foreign addons (like AIOMetadata)
+        if (id.startsWith("anilist:")) {
+            const parts = id.split(":");
             let aniListId = parts[1];
-            // We check if parts[1] is actually a number. If not (e.g., 'anilist:anime:12345'), 
-            // we look for the first number in the array.
+            
             if (isNaN(aniListId)) {
                 aniListId = parts.find(p => !isNaN(p) && p.length > 0) || parts[1];
             }
@@ -282,8 +145,6 @@ builder.defineMetaHandler(async ({ id }) => {
             const rawMeta = await getAnimeMeta(aniListId);
             	
             if (rawMeta) {
-            // Strictly force the meta.id to match the requested ID,
-            // otherwise Stremio drops the payload and shows "Invalid ID".
                 searchTitle = rawMeta.name;
                 meta = {
                     id: id,
@@ -297,26 +158,22 @@ builder.defineMetaHandler(async ({ id }) => {
                     episodes: rawMeta.episodes
                 };
             } else {
-                	
-            // Guard against missing titles in the ID (e.g., from foreign catalogs)
-            // If parts[2] exists, we decode it. If not, we don't have a title.
-            // This forces a safe fallback instead of crashing Node.js with a TypeError.
                 searchTitle = (parts.length > 2 && parts[2]) 
-                    ? Buffer.from(parts[2], 'base64url').toString('utf8') 
+                    ? Buffer.from(parts[2], "base64url").toString("utf8") 
                     : "Unknown Anime";
                 
-                meta = { id, type: 'series', name: searchTitle, poster: generateDynamicPoster(searchTitle) };
+                meta = { id, type: "series", name: searchTitle, poster: generateDynamicPoster(searchTitle) };
             }
-        } else if (id.startsWith('sukebei:')) {
-            const base64Str = id.split(':')[1];
-            searchTitle = base64Str ? Buffer.from(base64Str, 'base64url').toString('utf8') : "Unknown";
-            let cleanQuery = searchTitle.replace(/^\[.*?\]\s*/g, '').replace(/\[.*?\]/g, '').replace(/\(.*?\)/g, '').trim();
+        } else if (id.startsWith("sukebei:")) {
+            const base64Str = id.split(":")[1];
+            searchTitle = base64Str ? Buffer.from(base64Str, "base64url").toString("utf8") : "Unknown";
+            let cleanQuery = searchTitle.replace(/^\[.*?\]\s*/g, "").replace(/\[.*?\]/g, "").replace(/\(.*?\)/g, "").trim();
             const malData = await getJikanMeta(cleanQuery);
             if (malData) {
                 meta = { 
                     id, 
-                    type: 'series', 
-                    name: searchTitle.replace(/^\[.*?\]\s*/g, '').trim(), 
+                    type: "series", 
+                    name: searchTitle.replace(/^\[.*?\]\s*/g, "").trim(), 
                     poster: malData.poster || generateDynamicPoster(searchTitle),
                     background: malData.background, 
                     description: malData.description, 
@@ -325,12 +182,11 @@ builder.defineMetaHandler(async ({ id }) => {
                     episodes: malData.episodes
                 };
             } else {
-                meta = { id, type: 'series', name: searchTitle.replace(/^\[.*?\]\s*/g, '').trim(), poster: generateDynamicPoster(searchTitle) };
+                meta = { id, type: "series", name: searchTitle.replace(/^\[.*?\]\s*/g, "").trim(), poster: generateDynamicPoster(searchTitle) };
             }
         }
         
-        // Dynamic Episode Detection: Scans Sukebei to find the highest episode number if API meta is insufficient.
-        meta.type = 'series';
+        meta.type = "series";
         let epCount = meta.episodes || 1;
         if (epCount === 1 || !meta.episodes) {
             console.log(`[Meta] 🔍 Scraping Sukebei to detect actual episode count for OVA/Unknown: "${searchTitle}"`);
@@ -358,20 +214,15 @@ builder.defineMetaHandler(async ({ id }) => {
         return { meta, cacheMaxAge: 604800 };
     } catch (err) {
         console.error(`[Meta Error] Crashed during meta generation: ${err.message}`);
-        // Fallback meta so Stremio doesn't hard-crash into Invalid ID if something breaks
         return { 
-            meta: { id, type: 'series', name: "Unknown (Error)", poster: generateDynamicPoster("Error") }, 
+            meta: { id, type: "series", name: "Unknown (Error)", poster: generateDynamicPoster("Error") }, 
             cacheMaxAge: 60 
         };
     }
 });
 
-/**
- * STREAM HANDLER
- * The core of the addon: Finds playable links for a specific episode.
- */
 builder.defineStreamHandler(async ({ id, config }) => {
-    if (!id.startsWith('anilist:') && !id.startsWith('sukebei:')) return Promise.resolve({ streams: [] });
+    if (!id.startsWith("anilist:") && !id.startsWith("sukebei:")) return Promise.resolve({ streams: [] });
     
     console.log(`[Stream Request] Processing request for ID: ${id}`);
 
@@ -380,31 +231,25 @@ builder.defineStreamHandler(async ({ id, config }) => {
         let searchTitle = "", requestedEp = 1;
         let aniListIdForFallback = null;
         
-        if (id.startsWith('anilist:')) {
-            const parts = id.split(':');
+        if (id.startsWith("anilist:")) {
+            const parts = id.split(":");
             aniListIdForFallback = isNaN(parts[1]) ? parts.find(p => !isNaN(p) && p.length > 0) : parts[1];
             
-            // Robust parsing for foreign IDs
-            // If the addon is called by AIOMetadata, parts[2] (the Base64 title) is missing.
-            // We MUST have the title to search on Sukebei. 
-            // If it's missing from the ID, we fetch it live from AniList!
             if (parts.length > 2 && parts[2]) {
-                searchTitle = sanitizeSearchQuery(Buffer.from(parts[2], 'base64url').toString('utf8'));
+                searchTitle = sanitizeSearchQuery(Buffer.from(parts[2], "base64url").toString("utf8"));
             } else {
-                // Fallback: Fetch the title live from AniList using the ID
                 if (aniListIdForFallback) {
                     const freshMeta = await getAnimeMeta(aniListIdForFallback);
                     if (freshMeta) searchTitle = sanitizeSearchQuery(freshMeta.name);
                 }
             }
             
-            // Safely extract requestedEp no matter its position in the array
             const lastPart = parts[parts.length - 1];
             if (!isNaN(lastPart) && parts.length > 2) requestedEp = parseInt(lastPart, 10);
 
-        } else if (id.startsWith('sukebei:')) {
-            const parts = id.split(':');
-            searchTitle = parts[1] ? sanitizeSearchQuery(Buffer.from(parts[1], 'base64url').toString('utf8')) : "";
+        } else if (id.startsWith("sukebei:")) {
+            const parts = id.split(":");
+            searchTitle = parts[1] ? sanitizeSearchQuery(Buffer.from(parts[1], "base64url").toString("utf8")) : "";
             if (parts.length >= 4) requestedEp = parseInt(parts[3], 10);
         }
 
@@ -417,37 +262,27 @@ builder.defineStreamHandler(async ({ id, config }) => {
 
         let torrents = await searchSukebeiForHentai(searchTitle);
         
-        // ========================================================================
-        // FALLBACK ENGINE: Solves Romaji Mismatch
-        // If the primary Romaji search fails, cycle through English and Synonyms
-        // for both AniList and Sukebei (MAL) base queries.
-        // ========================================================================
         if (!torrents.length) {
             console.log(`[Stream] ❌ No torrents found for primary title: "${searchTitle}". Engaging Universal Fallback Engine...`);
             
             let fallbackMeta = null;
 
-            // Fetch metadata based on the origin of the ID to extract synonyms
             if (aniListIdForFallback) {
                 fallbackMeta = await getAnimeMeta(aniListIdForFallback);
-            } else if (id.startsWith('sukebei:')) {
-                // For MAL/Sukebei fallback IDs, fetch from Jikan
-                let cleanQuery = searchTitle.replace(/^\[.*?\]\s*/g, '').replace(/\[.*?\]/g, '').replace(/\(.*?\)/g, '').trim();
+            } else if (id.startsWith("sukebei:")) {
+                let cleanQuery = searchTitle.replace(/^\[.*?\]\s*/g, "").replace(/\[.*?\]/g, "").replace(/\(.*?\)/g, "").trim();
                 fallbackMeta = await getJikanMeta(cleanQuery);
             }
             
             if (fallbackMeta) {
                 const fallbackTitles = new Set();
                 
-                // Add the English translation if available
                 if (fallbackMeta.altName && fallbackMeta.altName.length > 2 && fallbackMeta.altName !== searchTitle) {
                     fallbackTitles.add(fallbackMeta.altName);
                 }
                 
-                // Add all Synonyms (e.g. "Shikijou Kyoudan")
                 if (fallbackMeta.synonyms && fallbackMeta.synonyms.length > 0) {
                     fallbackMeta.synonyms.forEach(syn => {
-                        // Only add synonyms that use standard latin letters (ignore raw Kanji/Hiragana)
                         if (/^[a-zA-Z0-9\s\-_!:]+$/.test(syn)) fallbackTitles.add(syn);
                     });
                 }
@@ -459,7 +294,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
                     
                     if (torrents.length > 0) {
                         console.log(`[Stream] ✅ Success! Found ${torrents.length} torrents using synonym: "${cleanAlt}"`);
-                        break; // Stop searching once we found a working translation
+                        break;
                     }
                 }
             }
@@ -485,7 +320,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
             let displayTitle = `🌐 Sukebei Network\n💾 ${t.size} | 👤 ${t.seeders}`;
             
             if (files) {
-                const matchedFile = findEpisodeInFiles(files, requestedEp);
+                const matchedFile = selectBestVideoFile(files, requestedEp);
                 if (!matchedFile) return; 
                 displayTitle += `\n🎯 File: ${matchedFile.name}`;
             } else {
@@ -496,11 +331,6 @@ builder.defineStreamHandler(async ({ id, config }) => {
             const { res, lang } = extractTags(t.title);
             const bytes = parseFloat(t.size) * 1024 * 1024 * 1024;
             
-            // ==========================================
-            // SUPERCHARGED SUBTITLE ENGINE
-            // ==========================================
-            // Ensure only subtitles matching the current episode are passed to the client.
-            // Also adds support for 13 distinct languages and appends the file extension to the UI.
             const buildSubs = (fileList, provider, apiKey, currentEp) => {
                 if (!fileList) return [];
                 return fileList
@@ -508,35 +338,31 @@ builder.defineStreamHandler(async ({ id, config }) => {
                         const name = f.name || f.path || "";
                         if (!/\.(ass|srt|ssa|vtt|sub|idx)$/i.test(name)) return false;
                         const extEp = extractEpisodeNumber(name);
-           // If the file explicitly has an episode number, it MUST match
                         if (extEp !== null) {
                             return extEp === currentEp;
                         }
-                        
-            // Fallback: If no number is found (e.g. "eng.srt"), 
-            // isEpisodeMatch allows it through to prevent dropping valid generic files.
                         return isEpisodeMatch(name, currentEp);
                     })
                     .map(f => {
-                        let subLang = 'English'; // Default Fallback
+                        let subLang = "English";
                         const n = (f.name || f.path || "").toLowerCase();
                         
-                        if (/ger|deu|deutsch/i.test(n)) subLang = 'German';
-                        else if (/spa|esp|spanish/i.test(n)) subLang = 'Spanish';
-                        else if (/rus|russian/i.test(n)) subLang = 'Russian';
-                        else if (/fre|fra|french/i.test(n)) subLang = 'French';
-                        else if (/ita|italian/i.test(n)) subLang = 'Italian';
-                        else if (/por|portuguese/i.test(n)) subLang = 'Portuguese';
-                        else if (/pol|polish/i.test(n)) subLang = 'Polish';
-                        else if (/chi|chinese|zho/i.test(n)) subLang = 'Chinese';
-                        else if (/ara|arabic/i.test(n)) subLang = 'Arabic';
-                        else if (/jpn|japanese/i.test(n)) subLang = 'Japanese';
-                        else if (/kor|korean/i.test(n)) subLang = 'Korean';
-                        else if (/hin|hindi/i.test(n)) subLang = 'Hindi';
-                        else if (/eng|english/i.test(n)) subLang = 'English';
+                        if (/ger|deu|deutsch/i.test(n)) subLang = "German";
+                        else if (/spa|esp|spanish/i.test(n)) subLang = "Spanish";
+                        else if (/rus|russian/i.test(n)) subLang = "Russian";
+                        else if (/fre|fra|french/i.test(n)) subLang = "French";
+                        else if (/ita|italian/i.test(n)) subLang = "Italian";
+                        else if (/por|portuguese/i.test(n)) subLang = "Portuguese";
+                        else if (/pol|polish/i.test(n)) subLang = "Polish";
+                        else if (/chi|chinese|zho/i.test(n)) subLang = "Chinese";
+                        else if (/ara|arabic/i.test(n)) subLang = "Arabic";
+                        else if (/jpn|japanese/i.test(n)) subLang = "Japanese";
+                        else if (/kor|korean/i.test(n)) subLang = "Korean";
+                        else if (/hin|hindi/i.test(n)) subLang = "Hindi";
+                        else if (/eng|english/i.test(n)) subLang = "English";
 
                         const extMatch = n.match(/\.(ass|srt|ssa|vtt|sub|idx)$/);
-                        const ext = extMatch ? extMatch[1].toUpperCase() : 'SUB';
+                        const ext = extMatch ? extMatch[1].toUpperCase() : "SUB";
 
                         return { 
                             id: f.id, 
@@ -550,19 +376,18 @@ builder.defineStreamHandler(async ({ id, config }) => {
                 const fRD = rdC[hashLow];
                 const prog = rdA[hashLow];
                 const name = (fRD || prog === 100) ? `YOMI [⚡ RD]\n🎥 ${res}` : (prog !== undefined ? `YOMI [⏳ ${prog}% RD]\n🎥 ${res}` : `YOMI [☁️ RD DL]\n🎥 ${res}`);
-                streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/realdebrid/${userConfig.rdKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fRD, 'realdebrid', userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `rd_${t.hash}` }, _bytes: bytes });
+                streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/realdebrid/${userConfig.rdKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fRD, "realdebrid", userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `rd_${t.hash}` }, _bytes: bytes });
             }
 
             if (userConfig.tbKey) {
                 const fTB = tbC[hashLow];
                 const prog = tbA[hashLow];
                 const name = (fTB || prog === 100) ? `YOMI [⚡ TB]\n🎥 ${res}` : (prog !== undefined ? `YOMI [⏳ ${prog}% TB]\n🎥 ${res}` : `YOMI [☁️ TB DL]\n🎥 ${res}`);
-                streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/torbox/${userConfig.tbKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fTB, 'torbox', userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `tb_${t.hash}` }, _bytes: bytes });
+                streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/torbox/${userConfig.tbKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fTB, "torbox", userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `tb_${t.hash}` }, _bytes: bytes });
             }
         });
         
-        // Sort streams: Cached (lightning bolt) first, then by size (highest quality)
-        return { streams: streams.sort((a,b) => (a.name.includes('⚡') ? -1 : 1) || (b._bytes - a._bytes)), cacheMaxAge: 5 };
+        return { streams: streams.sort((a,b) => (a.name.includes("⚡") ? -1 : 1) || (b._bytes - a._bytes)), cacheMaxAge: 5 };
     } catch (err) {
         console.error(`[Stream Error] Crashed during stream generation: ${err.message}`);
         return { streams: [] };
