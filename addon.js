@@ -1,7 +1,7 @@
 //===============
 // YOMI STREMIO ADDON - CORE LOGIC
 // The main entry point for the Stremio logic.
-// Includes strict unit parsing for file sizes to prevent sorting explosions.
+// Strictly conforms to the latest Stremio SDK stream specifications.
 //===============
 
 const { addonBuilder } = require("stremio-addon-sdk");
@@ -9,6 +9,7 @@ const { searchAdultAnime, getAnimeMeta, getTrendingAdultAnime, getTopAdultAnime,
 const { searchSukebeiForHentai, cleanTorrentTitle } = require("./lib/sukebei");
 const { checkRD, checkTorbox, getActiveRD, getActiveTorbox } = require("./lib/debrid");
 const { extractEpisodeNumber, getBatchRange, isEpisodeMatch, selectBestVideoFile } = require("./lib/parser");
+
 
 // Fallback for missing environment variables when self-hosting, sanitizing trailing slashes
 let BASE_URL = process.env.BASE_URL || "http://127.0.0.1:7000";
@@ -19,7 +20,7 @@ BASE_URL = BASE_URL.replace(/\/+$/, "");
 //===============
 const manifest = {
     id: "org.community.yomi",
-    version: "5.2.3",
+    version: "5.2.5",
     name: "Yomi",
     logo: "https://github.com/mralanbourne/Yomi/blob/main/static/yomi.png?raw=true", 
     description: "The ultimate Debrid-powered Sukebei gateway. Streams raw, uncompressed Hentai & NSFW Anime directly via Real-Debrid or Torbox. Smart-parsing tames chaotic torrent names for a clean catalog. Pure quality, zero buffering. Info: github.com/mralanbourne/Yomi",
@@ -37,6 +38,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
+
 // Safe parsing of the user configuration.
 function parseConfig(config) {
     if (!config) return {};
@@ -45,6 +47,7 @@ function parseConfig(config) {
         try { return JSON.parse(decodeURIComponent(config)); } catch (e2) { return {}; }
     }
 }
+
 
 // Safely parses varying size units from Sukebei to prevent sorting metric explosions.
 function parseSizeToBytes(sizeStr) {
@@ -58,6 +61,7 @@ function parseSizeToBytes(sizeStr) {
     if (unit.includes("K")) return val * 1024;
     return val;
 }
+
 
 // Analyses the file extension and language tags from filenames.
 function extractTags(title) {
@@ -74,6 +78,7 @@ function extractTags(title) {
     return { res, lang };
 }
 
+
 // Prepares the search query for Jikan fallbacks.
 function sanitizeSearchQuery(title) {
     return title.replace(/\(.*?\)/g, "").replace(/\[.*?\]/g, "").replace(/\s{2,}/g, " ").trim();
@@ -84,6 +89,7 @@ function isTitleMatchingEpisode(title, requestedEp) {
     return isEpisodeMatch(title, requestedEp);
 }
     
+
 // Generates posters for streams with no known metadata.
 function generateDynamicPoster(title) {
     let clean = title.replace(/^\[.*?\]\s*/g, "").replace(/\[.*?\]/g, " ").replace(/\(.*?\)/g, " ");
@@ -99,7 +105,7 @@ function generateDynamicPoster(title) {
     }
     if (line) lines.push(line.trim());
     
-    return `https://dummyimage.com/600x900/1a1a1a/e91e63.png?text=${encodeURIComponent(lines.join("\n"))}`;
+    return "https://dummyimage.com/600x900/1a1a1a/e91e63.png?text=" + encodeURIComponent(lines.join("\n"));
 }
 
 //===============
@@ -107,7 +113,7 @@ function generateDynamicPoster(title) {
 //===============
 
 builder.defineCatalogHandler(async ({ id, extra, config }) => {
-    console.log(`[Catalog Request] Fetching catalog: ${id}`);
+    console.log("[Catalog Request] Fetching catalog: " + id);
     
     const userConfig = parseConfig(config);
     
@@ -137,7 +143,7 @@ builder.defineCatalogHandler(async ({ id, extra, config }) => {
         Object.keys(rawGroups).forEach(cleanName => {
             if (!anilistMetas.some(m => m.name.toLowerCase().includes(cleanName.toLowerCase()))) {
                 finalMetas.push({ 
-                    id: `sukebei:${Buffer.from(cleanName).toString("base64url")}`, 
+                    id: "sukebei:" + Buffer.from(cleanName).toString("base64url"), 
                     type: "series", 
                     name: cleanName.replace(/^\[.*?\]\s*/g, "").trim(), 
                     poster: generateDynamicPoster(cleanName) 
@@ -154,7 +160,7 @@ builder.defineMetaHandler(async ({ id }) => {
         return Promise.resolve({ meta: null });
     }
 
-    console.log(`[Meta Request] Fetching details for ID: ${id}`);
+    console.log("[Meta Request] Fetching details for ID: " + id);
 
     let meta = null;
     let searchTitle = "";
@@ -215,7 +221,7 @@ builder.defineMetaHandler(async ({ id }) => {
         meta.type = "series";
         let epCount = meta.episodes || 1;
         if (epCount === 1 || !meta.episodes) {
-            console.log(`[Meta] 🔍 Scraping Sukebei to detect actual episode count for OVA/Unknown: "${searchTitle}"`);
+            console.log("[Meta] Scraping Sukebei to detect actual episode count for OVA/Unknown: " + searchTitle);
             try {
                 const torrents = await searchSukebeiForHentai(searchTitle);
                 let maxDetected = 1;
@@ -228,18 +234,18 @@ builder.defineMetaHandler(async ({ id }) => {
                 if (maxDetected > epCount) epCount = maxDetected;
             } catch(e) {}
         } else {
-            console.log(`[Meta] ⚡ Fast-loading: Episode count known (${epCount}) for "${searchTitle}". Skipping Sukebei scrape.`);
+            console.log("[Meta] Fast-loading: Episode count known for " + searchTitle + ". Skipping Sukebei scrape.");
         }
 
         const videos = [];
         const episodeThumbnail = meta.background || meta.poster || "https://dummyimage.com/600x337/1a1a1a/e91e63.png?text=YOMI+EPISODE";
         for (let i = 1; i <= epCount; i++) {
-            videos.push({ id: `${id}:1:${i}`, title: `Episode ${i}`, season: 1, episode: i, released: new Date().toISOString(), thumbnail: episodeThumbnail });
+            videos.push({ id: id + ":1:" + i, title: "Episode " + i, season: 1, episode: i, released: new Date().toISOString(), thumbnail: episodeThumbnail });
         }
         meta.videos = videos;
         return { meta, cacheMaxAge: 604800 };
     } catch (err) {
-        console.error(`[Meta Error] Crashed during meta generation: ${err.message}`);
+        console.error("[Meta Error] Crashed during meta generation: " + err.message);
         return { 
             meta: { id, type: "series", name: "Unknown (Error)", poster: generateDynamicPoster("Error") }, 
             cacheMaxAge: 60 
@@ -250,7 +256,7 @@ builder.defineMetaHandler(async ({ id }) => {
 builder.defineStreamHandler(async ({ id, config }) => {
     if (!id.startsWith("anilist:") && !id.startsWith("sukebei:")) return Promise.resolve({ streams: [] });
     
-    console.log(`[Stream Request] Processing request for ID: ${id}`);
+    console.log("[Stream Request] Processing request for ID: " + id);
 
     try {
         const userConfig = parseConfig(config);
@@ -280,16 +286,16 @@ builder.defineStreamHandler(async ({ id, config }) => {
         }
 
         if (!searchTitle) {
-            console.log(`[Stream] Search aborted. No valid title found for ID: ${id}`);
+            console.log("[Stream] Search aborted. No valid title found for ID: " + id);
             return { streams: [] };
         }
         
-        console.log(`[Stream] 🔍 Scraping Sukebei for streams: "${searchTitle}" (Episode ${requestedEp})`);
+        console.log("[Stream] Scraping Sukebei for streams: " + searchTitle + " (Episode " + requestedEp + ")");
 
         let torrents = await searchSukebeiForHentai(searchTitle);
         
         if (!torrents.length) {
-            console.log(`[Stream] ❌ No torrents found for primary title: "${searchTitle}". Engaging Universal Fallback Engine...`);
+            console.log("[Stream] No torrents found for primary title: " + searchTitle + ". Engaging Universal Fallback Engine...");
             
             let fallbackMeta = null;
 
@@ -313,13 +319,24 @@ builder.defineStreamHandler(async ({ id, config }) => {
                     });
                 }
 
+                
+                // ADVANCED FALLBACK: Truncate long Light Novel titles to bypass Sukebei strict limits
+                const primaryWords = searchTitle.split(/\s+/);
+                if (primaryWords.length > 3) fallbackTitles.add(primaryWords.slice(0, 3).join(" "));
+                if (primaryWords.length > 4) fallbackTitles.add(primaryWords.slice(0, 4).join(" "));
+                
+                if (fallbackMeta.altName) {
+                    const altWords = fallbackMeta.altName.split(/\s+/);
+                    if (altWords.length > 3) fallbackTitles.add(altWords.slice(0, 3).join(" "));
+                }
+
                 for (const altTitle of fallbackTitles) {
-                    console.log(`[Stream] 🔄 Fallback Engine: Searching Sukebei for synonym: "${altTitle}"`);
+                    console.log("[Stream] Fallback Engine: Searching Sukebei for synonym: " + altTitle);
                     const cleanAlt = sanitizeSearchQuery(altTitle);
                     torrents = await searchSukebeiForHentai(cleanAlt);
                     
                     if (torrents.length > 0) {
-                        console.log(`[Stream] ✅ Success! Found ${torrents.length} torrents using synonym: "${cleanAlt}"`);
+                        console.log("[Stream] Success! Found " + torrents.length + " torrents using synonym: " + cleanAlt);
                         break;
                     }
                 }
@@ -327,7 +344,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
         }
 
         if (!torrents.length) {
-            console.log(`[Stream] ❌ All searches failed. No streams available.`);
+            console.log("[Stream] All searches failed. No streams available.");
             return { streams: [], cacheMaxAge: 60 };
         }
 
@@ -343,15 +360,24 @@ builder.defineStreamHandler(async ({ id, config }) => {
         torrents.forEach(t => {
             const hashLow = t.hash.toLowerCase();
             const files = rdC[hashLow] || tbC[hashLow];
-            let displayTitle = `🌐 Sukebei Network\n💾 ${t.size} | 👤 ${t.seeders}`;
             
+            
+            // SEMANTIC UX: Clearly identify if the torrent is a batch release or a single episode
+            const isBatch = getBatchRange(t.title) !== null;
+            const batchIndicator = isBatch ? "📦 BATCH" : "🎬 EPISODE";
+            
+            let displayTitle = "🌐 Sukebei Network | " + batchIndicator + "\n💾 " + t.size + " | 👤 " + t.seeders;
+            
+            let matchedFileName = undefined;
+
             if (files) {
                 const matchedFile = selectBestVideoFile(files, requestedEp);
                 if (!matchedFile) return; 
-                displayTitle += `\n🎯 File: ${matchedFile.name}`;
+                displayTitle += "\n🎯 File: " + matchedFile.name;
+                matchedFileName = matchedFile.name;
             } else {
                 if (!isTitleMatchingEpisode(t.title, requestedEp)) return; 
-                displayTitle += `\n📄 ${t.title}`;
+                displayTitle += "\n📄 " + t.title;
             }
 
             const { res, lang } = extractTags(t.title);
@@ -362,7 +388,9 @@ builder.defineStreamHandler(async ({ id, config }) => {
                 return fileList
                     .filter(f => {
                         const name = f.name || f.path || "";
-                        if (!/\.(ass|srt|ssa|vtt|sub|idx)$/i.test(name)) return false;
+                        
+                        // CRITICAL: .idx and .sub (VobSub) are strictly filtered out here as they crash the Stremio web player
+                        if (!/\.(ass|srt|ssa|vtt)$/i.test(name)) return false;
                         const extEp = extractEpisodeNumber(name);
                         if (extEp !== null) {
                             return extEp === currentEp;
@@ -387,32 +415,36 @@ builder.defineStreamHandler(async ({ id, config }) => {
                         else if (/hin|hindi/i.test(n)) subLang = "Hindi";
                         else if (/eng|english/i.test(n)) subLang = "English";
 
-                        const extMatch = n.match(/\.(ass|srt|ssa|vtt|sub|idx)$/);
+                        const extMatch = n.match(/\.(ass|srt|ssa|vtt)$/);
                         const ext = extMatch ? extMatch[1].toUpperCase() : "SUB";
 
+                        
                         // Append original filename to query to allow correct MIME type parsing for Torbox
                         return { 
                             id: f.id, 
-                            url: `${BASE_URL}/sub/${provider}/${apiKey}/${t.hash}/${f.id}?filename=${encodeURIComponent(n)}`, 
-                            lang: `${subLang} (${ext})` 
+                            url: BASE_URL + "/sub/" + provider + "/" + apiKey + "/" + t.hash + "/" + f.id + "?filename=" + encodeURIComponent(n), 
+                            lang: subLang + " (" + ext + ")" 
                         };
                     });
             };
 
+            
+            // Using "description" instead of "title" to ensure complete compliance with the latest Stremio SDK
             if (userConfig.rdKey) {
                 const fRD = rdC[hashLow];
                 const prog = rdA[hashLow];
-                const name = (fRD || prog === 100) ? `YOMI [⚡ RD]\n🎥 ${res}` : (prog !== undefined ? `YOMI [⏳ ${prog}% RD]\n🎥 ${res}` : `YOMI [☁️ RD DL]\n🎥 ${res}`);
-                streams.push({ name, title: displayTitle, url: `${BASE_URL}/resolve/realdebrid/${userConfig.rdKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fRD, "realdebrid", userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `rd_${t.hash}` }, _bytes: bytes });
+                const name = (fRD || prog === 100) ? "YOMI [⚡ RD]\n🎥 " + res : (prog !== undefined ? "YOMI [⏳ " + prog + "% RD]\n🎥 " + res : "YOMI [☁️ RD DL]\n🎥 " + res);
+                streams.push({ name: name, description: displayTitle, url: BASE_URL + "/resolve/realdebrid/" + userConfig.rdKey + "/" + t.hash + "/" + requestedEp, subtitles: buildSubs(fRD, "realdebrid", userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: "rd_" + t.hash, filename: matchedFileName }, _bytes: bytes });
             }
 
             if (userConfig.tbKey) {
                 const fTB = tbC[hashLow];
                 const prog = tbA[hashLow];
-                const name = (fTB || prog === 100) ? `YOMI [⚡ TB]\n🎥 ${res}` : (prog !== undefined ? `YOMI [⏳ ${prog}% TB]\n🎥 ${res}` : `YOMI [☁️ TB DL]\n🎥 ${res}`);
-                streams.push({ name, title: displayTitle, url: `${BASE_URL}/resolve/torbox/${userConfig.tbKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fTB, "torbox", userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `tb_${t.hash}` }, _bytes: bytes });
+                const name = (fTB || prog === 100) ? "YOMI [⚡ TB]\n🎥 " + res : (prog !== undefined ? "YOMI [⏳ " + prog + "% TB]\n🎥 " + res : "YOMI [☁️ TB DL]\n🎥 " + res);
+                streams.push({ name: name, description: displayTitle, url: BASE_URL + "/resolve/torbox/" + userConfig.tbKey + "/" + t.hash + "/" + requestedEp, subtitles: buildSubs(fTB, "torbox", userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: "tb_" + t.hash, filename: matchedFileName }, _bytes: bytes });
             }
         });
+        
         
         // Safely sort streams: priority to cached links, then strict fallback to file size descending
         return { 
@@ -426,7 +458,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
             cacheMaxAge: 5 
         };
     } catch (err) {
-        console.error(`[Stream Error] Crashed during stream generation: ${err.message}`);
+        console.error("[Stream Error] Crashed during stream generation: " + err.message);
         return { streams: [] };
     }
 });
