@@ -52,7 +52,7 @@ app.get("/configure", (req, res) => {
 //===============
 // SUBTITLE PROXY
 // Downloads subtitles directly and streams them to the client.
-// Includes retry logic to avoid race conditions with the /resolve endpoint.
+// Includes retry logic to avoid race conditions with the resolve endpoint.
 //===============
 app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -85,7 +85,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
                 }
             }
         } else if (provider === "torbox") {
-
+            
             // Retry-Logic for Torbox
             let dlRes = null;
             try {
@@ -149,24 +149,27 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
             
             let info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
             
+            // Catch dead or invalid torrents immediately to avoid infinite loading loops
+            const badStates = ["magnet_error", "error", "virus", "dead"];
+            if (badStates.includes(info.data.status)) {
+                await axios.delete(`https://api.real-debrid.com/rest/1.0/torrents/delete/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } }).catch(() => null);
+                return res.status(404).send("Torrent is dead or invalid.");
+            }
+            
             if (info.data.status !== "downloaded") {
                 if (info.data.status === "waiting_files_selection") {
-                    const bestFile = selectBestVideoFile(info.data.files, requestedEp);
-                    
-                    if (!bestFile) {
-                        return serveArchiveVideo(req, res);
-                    }
-                    
-                    const selectedIds = [bestFile.id];
+                    const selectedIds = [];
 
+                    // Automatically select all relevant video and subtitle files to prevent episode lockouts
                     info.data.files.forEach(f => {
                         const name = (f.path || f.name || "").toLowerCase();
-                        if (/\.(ass|srt|ssa|vtt|sub|idx)$/.test(name)) {
-                            if (!selectedIds.includes(f.id)) selectedIds.push(f.id);
+                        if (/\.(mkv|mp4|avi|wmv|flv|webm|m4v|ts|m2ts|mov|ass|srt|ssa|vtt|sub|idx)$/.test(name)) {
+                            selectedIds.push(f.id);
                         }
                     });
                     
-                    const bodyString = "files=" + selectedIds.join(",");
+                    const bodyString = "files=" + (selectedIds.length > 0 ? selectedIds.join(",") : "all");
+                    
                     await axios.post("https://api.real-debrid.com/rest/1.0/torrents/selectFiles/" + torrent.id, bodyString, { 
                         headers: { 
                             Authorization: `Bearer ${apiKey}`,
@@ -189,6 +192,13 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
                 return serveArchiveVideo(req, res);
             }
             
+            // Resolves the edge case where a legacy torrent has an unselected episode
+            if (bestFileFresh.selected === 0) {
+                console.log(`[Resolve] Unselected episode detected. Re-adding torrent to trigger selection.`);
+                await axios.delete(`https://api.real-debrid.com/rest/1.0/torrents/delete/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } }).catch(() => null);
+                return res.redirect(req.originalUrl);
+            }
+            
             const targetFileIndex = info.data.files.findIndex(f => f.id === bestFileFresh.id);
             let targetLink = info.data.links[0]; 
             
@@ -209,7 +219,7 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
                  return serveLoadingVideo(req, res);
             }
 
-            const unrestrict = await axios.post("https://api.real-debrid.com/rest/1.0/unrestrict/link", new URLSearchParams({ link: targetLink }), { headers: { Authorization: `Bearer ${apiKey}` } });
+            const unrestrict = await axios.post("https://api.real-debrid.com/rest/1.0/unrestrict/link", newSearchParams({ link: targetLink }), { headers: { Authorization: `Bearer ${apiKey}` } });
             return res.redirect(unrestrict.data.download);
         }
         
