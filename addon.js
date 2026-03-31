@@ -1,7 +1,6 @@
 //===============
 // YOMI STREMIO ADDON - CORE LOGIC
-// This is the main entry point for the Stremio Addon logic.
-// It defines how the addon interacts with Stremio via the SDK.
+// The main entry point for the Stremio logic.
 //===============
 
 const { addonBuilder } = require("stremio-addon-sdk");
@@ -9,6 +8,9 @@ const { searchAdultAnime, getAnimeMeta, getTrendingAdultAnime, getTopAdultAnime,
 const { searchSukebeiForHentai, cleanTorrentTitle } = require("./lib/sukebei");
 const { checkRD, checkTorbox, getActiveRD, getActiveTorbox } = require("./lib/debrid");
 const { extractEpisodeNumber, getBatchRange, isEpisodeMatch, selectBestVideoFile } = require("./lib/parser");
+
+// Fallback for missing environment variables when self-hosting
+const BASE_URL = process.env.BASE_URL || "http://127.0.0.1:7000";
 
 //===============
 // ADDON MANIFEST
@@ -33,7 +35,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// Safely parses the user's Debrid configuration from the URL.
+// Safe parsing of the user configuration.
 function parseConfig(config) {
     if (!config) return {};
     if (typeof config === "object") return config;
@@ -42,7 +44,7 @@ function parseConfig(config) {
     }
 }
 
-// Scans titles for quality and language tags.
+// Analyses the file extension and language tags from filenames.
 function extractTags(title) {
     let res = "SD", lang = "Raw";
     if (/(1080p|1080|FHD)/i.test(title)) res = "1080p";
@@ -57,7 +59,7 @@ function extractTags(title) {
     return { res, lang };
 }
 
-// Removes brackets and excess space from titles.
+// Prepares the search query for Jikan fallbacks.
 function sanitizeSearchQuery(title) {
     return title.replace(/\(.*?\)/g, "").replace(/\[.*?\]/g, "").replace(/\s{2,}/g, " ").trim();
 }
@@ -67,7 +69,7 @@ function isTitleMatchingEpisode(title, requestedEp) {
     return isEpisodeMatch(title, requestedEp);
 }
     
-// Generates an image-based placeholder poster for missing metadata.
+// Generates posters for streams with no known metadata.
 function generateDynamicPoster(title) {
     let clean = title.replace(/^\[.*?\]\s*/g, "").replace(/\[.*?\]/g, " ").replace(/\(.*?\)/g, " ");
     let safeTitle = clean.replace(/[^a-zA-Z0-9 ]/g, "").replace(/\s{2,}/g, " ").substring(0, 30).trim().toUpperCase();
@@ -89,7 +91,6 @@ function generateDynamicPoster(title) {
 // STREMIO HANDLERS
 //===============
 
-// The catalog handler extracts the user's config
 builder.defineCatalogHandler(async ({ id, extra, config }) => {
     console.log(`[Catalog Request] Fetching catalog: ${id}`);
     
@@ -376,7 +377,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
 
                         return { 
                             id: f.id, 
-                            url: `${process.env.BASE_URL}/sub/${provider}/${apiKey}/${t.hash}/${f.id}`, 
+                            url: `${BASE_URL}/sub/${provider}/${apiKey}/${t.hash}/${f.id}`, 
                             lang: `${subLang} (${ext})` 
                         };
                     });
@@ -386,14 +387,14 @@ builder.defineStreamHandler(async ({ id, config }) => {
                 const fRD = rdC[hashLow];
                 const prog = rdA[hashLow];
                 const name = (fRD || prog === 100) ? `YOMI [⚡ RD]\n🎥 ${res}` : (prog !== undefined ? `YOMI [⏳ ${prog}% RD]\n🎥 ${res}` : `YOMI [☁️ RD DL]\n🎥 ${res}`);
-                streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/realdebrid/${userConfig.rdKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fRD, "realdebrid", userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `rd_${t.hash}` }, _bytes: bytes });
+                streams.push({ name, title: displayTitle, url: `${BASE_URL}/resolve/realdebrid/${userConfig.rdKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fRD, "realdebrid", userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `rd_${t.hash}` }, _bytes: bytes });
             }
 
             if (userConfig.tbKey) {
                 const fTB = tbC[hashLow];
                 const prog = tbA[hashLow];
                 const name = (fTB || prog === 100) ? `YOMI [⚡ TB]\n🎥 ${res}` : (prog !== undefined ? `YOMI [⏳ ${prog}% TB]\n🎥 ${res}` : `YOMI [☁️ TB DL]\n🎥 ${res}`);
-                streams.push({ name, title: displayTitle, url: `${process.env.BASE_URL}/resolve/torbox/${userConfig.tbKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fTB, "torbox", userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `tb_${t.hash}` }, _bytes: bytes });
+                streams.push({ name, title: displayTitle, url: `${BASE_URL}/resolve/torbox/${userConfig.tbKey}/${t.hash}/${requestedEp}`, subtitles: buildSubs(fTB, "torbox", userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: `tb_${t.hash}` }, _bytes: bytes });
             }
         });
         
