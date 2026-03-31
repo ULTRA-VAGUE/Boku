@@ -17,9 +17,6 @@ const app = express();
 app.use(express.json()); 
 const port = process.env.PORT || 7000;
 
-app.use(express.static(path.join(__dirname, "public")));
-app.use(express.static(path.join(__dirname, "static")));
-
 // API status endpoint for platforms such as Heroku or Koyeb
 app.get("/health", (req, res) => res.status(200).json({ status: "alive" }));
 
@@ -67,14 +64,13 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
         let fileName = "sub.srt";
         
         if (provider === "realdebrid") {
-            
-            let list = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=100", { headers: { Authorization: `Bearer ${apiKey}` } });
+            let list = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: `Bearer ${apiKey}` } });
             let torrent = list.data.find(t => t.hash.toLowerCase() === hash.toLowerCase());
             
             // Retry-Logic
             if (!torrent) {
                 await new Promise(resolve => setTimeout(resolve, 2500));
-                list = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=100", { headers: { Authorization: `Bearer ${apiKey}` } });
+                list = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: `Bearer ${apiKey}` } });
                 torrent = list.data.find(t => t.hash.toLowerCase() === hash.toLowerCase());
             }
 
@@ -89,8 +85,19 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
                 }
             }
         } else if (provider === "torbox") {
-            const dl = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&hash=${hash}&file_id=${fileId}`);
-            downloadUrl = dl.data.data;
+
+            // Retry-Logic for Torbox
+            let dlRes = null;
+            try {
+                dlRes = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&hash=${hash}&file_id=${fileId}`);
+            } catch (err) {
+                await new Promise(resolve => setTimeout(resolve, 2500));
+                dlRes = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&hash=${hash}&file_id=${fileId}`);
+            }
+
+            if (dlRes && dlRes.data && dlRes.data.data) {
+                downloadUrl = dlRes.data.data;
+            }
         }
         
         if (!downloadUrl) return res.status(404).send("Subtitle not found or not ready yet.");
@@ -113,14 +120,12 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
     
 // Displays a loading video whilst the Provider is processing the torrent.
 function serveLoadingVideo(req, res) {
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
-    res.redirect(`${protocol}://${req.headers.host}/waiting.mp4`);
+    res.redirect("/waiting.mp4");
 }
 
 // Displays an information video if the torrent contains only useless archives.
 function serveArchiveVideo(req, res) {
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
-    res.redirect(`${protocol}://${req.headers.host}/archive.mp4`);
+    res.redirect("/archive.mp4");
 }
 
 //===============
@@ -134,7 +139,7 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
     
     try {
         if (provider === "realdebrid") {
-            const listRes = await axios.get("https://api.real-debrid.com/rest/1.0/torrents", { headers: { Authorization: `Bearer ${apiKey}` } });
+            const listRes = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: `Bearer ${apiKey}` } });
             let torrent = listRes.data.find(t => t.hash.toLowerCase() === hash.toLowerCase());
             
             if (!torrent) {
