@@ -52,7 +52,7 @@ app.get("/configure", (req, res) => {
 //===============
 // SUBTITLE PROXY
 // Downloads subtitles directly and streams them to the client.
-// Includes retry logic and offset calculations to prevent array-out-of-bounds crashes.
+// Includes critical bandwidth-leak protections and strict MIME parsing.
 //===============
 app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -61,7 +61,9 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
     
     try {
         let downloadUrl = null;
-        let fileName = "sub.srt";
+        
+        // Read the actual filename from query to ensure correct MIME type parsing for Torbox
+        let fileName = req.query.filename || "sub.srt";
         
         if (provider === "realdebrid") {
             let list = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: `Bearer ${apiKey}` } });
@@ -86,6 +88,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
                         return res.status(404).send("Subtitle not selected in Debrid");
                     }
 
+                    // Real-Debrid accurately provides the true path, overriding the query parameter
                     fileName = targetFile.path;
                     let targetLink = null;
                     let linkCounter = 0;
@@ -135,10 +138,17 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
 
         const subResponse = await axios.get(downloadUrl, { responseType: "stream" });
         
-        // Prevent socket memory leaks if the client aborts the connection mid-download
+        // Prevent socket memory leaks if the download errors out
         subResponse.data.on("error", (err) => {
             console.error(`[Stream Error] Subtitle stream aborted: ${err.message}`);
             res.end();
+        });
+        
+        // Prevent background bandwidth leaks if the Stremio client closes the connection early
+        req.on("close", () => {
+            if (subResponse && subResponse.data && typeof subResponse.data.destroy === "function") {
+                subResponse.data.destroy();
+            }
         });
         
         subResponse.data.pipe(res);
