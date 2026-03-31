@@ -263,6 +263,12 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
                 return serveLoadingVideo(req, res);
             }
             
+            // Catch dead or invalid Torbox torrents to prevent infinite Stremio loading loops
+            const tbBadStates = ["error", "failed", "dead", "deleted"];
+            if (tbBadStates.includes(torrent.download_state)) {
+                return res.status(404).send("Torrent is dead or invalid in Torbox.");
+            }
+            
             if (torrent.download_state !== "completed" && torrent.download_state !== "cached") return serveLoadingVideo(req, res);
             
             const bestFile = selectBestVideoFile(torrent.files, requestedEp);
