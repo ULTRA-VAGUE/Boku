@@ -1,7 +1,7 @@
 //===============
 // YOMI STREMIO ADDON - CORE LOGIC
 // The main entry point for the Stremio logic.
-// Includes strict sanitization for BASE_URL to prevent routing failures.
+// Includes strict sanitization for BASE_URL and fixed stream sorting logic.
 //===============
 
 const { addonBuilder } = require("stremio-addon-sdk");
@@ -343,7 +343,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
 
             const { res, lang } = extractTags(t.title);
             
-            // Robust calculation to prevent NaN crashes from unresolved torrent sizes like "? GB"
+            // calculation to prevent NaN crashes from unresolved torrent sizes like "? GB"
             const parsedSize = parseFloat(t.size);
             const bytes = isNaN(parsedSize) ? 0 : parsedSize * 1024 * 1024 * 1024;
             
@@ -380,9 +380,10 @@ builder.defineStreamHandler(async ({ id, config }) => {
                         const extMatch = n.match(/\.(ass|srt|ssa|vtt|sub|idx)$/);
                         const ext = extMatch ? extMatch[1].toUpperCase() : "SUB";
 
+                        // Append original filename to query to allow correct MIME type parsing for Torbox
                         return { 
                             id: f.id, 
-                            url: `${BASE_URL}/sub/${provider}/${apiKey}/${t.hash}/${f.id}`, 
+                            url: `${BASE_URL}/sub/${provider}/${apiKey}/${t.hash}/${f.id}?filename=${encodeURIComponent(n)}`, 
                             lang: `${subLang} (${ext})` 
                         };
                     });
@@ -403,7 +404,17 @@ builder.defineStreamHandler(async ({ id, config }) => {
             }
         });
         
-        return { streams: streams.sort((a,b) => (a.name.includes("⚡") ? -1 : 1) || (b._bytes - a._bytes)), cacheMaxAge: 5 };
+        // Safely sort streams: priority to cached links, then strict fallback to file size descending
+        return { 
+            streams: streams.sort((a, b) => {
+                const aCached = a.name.includes("⚡");
+                const bCached = b.name.includes("⚡");
+                if (aCached && !bCached) return -1;
+                if (!aCached && bCached) return 1;
+                return b._bytes - a._bytes;
+            }), 
+            cacheMaxAge: 5 
+        };
     } catch (err) {
         console.error(`[Stream Error] Crashed during stream generation: ${err.message}`);
         return { streams: [] };
