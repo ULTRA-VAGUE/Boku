@@ -1,6 +1,7 @@
 //===============
 // YOMI STREMIO ADDON - CORE LOGIC
 // The main entry point for the Stremio logic.
+// Includes strict sanitization for BASE_URL to prevent routing failures.
 //===============
 
 const { addonBuilder } = require("stremio-addon-sdk");
@@ -9,8 +10,9 @@ const { searchSukebeiForHentai, cleanTorrentTitle } = require("./lib/sukebei");
 const { checkRD, checkTorbox, getActiveRD, getActiveTorbox } = require("./lib/debrid");
 const { extractEpisodeNumber, getBatchRange, isEpisodeMatch, selectBestVideoFile } = require("./lib/parser");
 
-// Fallback for missing environment variables when self-hosting
-const BASE_URL = process.env.BASE_URL || "http://127.0.0.1:7000";
+// Fallback for missing environment variables when self-hosting, sanitizing trailing slashes
+let BASE_URL = process.env.BASE_URL || "http://127.0.0.1:7000";
+BASE_URL = BASE_URL.replace(/\/+$/, "");
 
 //===============
 // ADDON MANIFEST
