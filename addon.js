@@ -1,7 +1,7 @@
 //===============
 // YOMI STREMIO ADDON - CORE LOGIC
 // The main entry point for the Stremio logic.
-// Includes strict sanitization for BASE_URL and fixed stream sorting logic.
+// Includes strict unit parsing for file sizes to prevent sorting explosions.
 //===============
 
 const { addonBuilder } = require("stremio-addon-sdk");
@@ -44,6 +44,19 @@ function parseConfig(config) {
     try { return JSON.parse(Buffer.from(config, "base64").toString()); } catch (e) {
         try { return JSON.parse(decodeURIComponent(config)); } catch (e2) { return {}; }
     }
+}
+
+// Safely parses varying size units from Sukebei to prevent sorting metric explosions.
+function parseSizeToBytes(sizeStr) {
+    if (!sizeStr || typeof sizeStr !== "string") return 0;
+    const match = sizeStr.match(/([\d.]+)\s*(GB|MB|KB|GiB|MiB|KiB|B)/i);
+    if (!match) return 0;
+    const val = parseFloat(match[1]);
+    const unit = match[2].toUpperCase();
+    if (unit.includes("G")) return val * 1024 * 1024 * 1024;
+    if (unit.includes("M")) return val * 1024 * 1024;
+    if (unit.includes("K")) return val * 1024;
+    return val;
 }
 
 // Analyses the file extension and language tags from filenames.
@@ -342,10 +355,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
             }
 
             const { res, lang } = extractTags(t.title);
-            
-            // calculation to prevent NaN crashes from unresolved torrent sizes like "? GB"
-            const parsedSize = parseFloat(t.size);
-            const bytes = isNaN(parsedSize) ? 0 : parsedSize * 1024 * 1024 * 1024;
+            const bytes = parseSizeToBytes(t.size);
             
             const buildSubs = (fileList, provider, apiKey, currentEp) => {
                 if (!fileList) return [];
