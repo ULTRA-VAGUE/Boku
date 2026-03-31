@@ -17,6 +17,10 @@ const app = express();
 app.use(express.json()); 
 const port = process.env.PORT || 7000;
 
+// Fallback for missing environment variables when self-hosting
+let BASE_URL = process.env.BASE_URL || "http://127.0.0.1:7000";
+BASE_URL = BASE_URL.replace(/\/+$/, "");
+
 // API status endpoint for platforms such as Heroku or Koyeb
 app.get("/health", (req, res) => res.status(200).json({ status: "alive" }));
 
@@ -70,18 +74,18 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
         let fileName = req.query.filename || "sub.srt";
         
         if (provider === "realdebrid") {
-            let list = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: `Bearer ${apiKey}` } });
+            let list = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: "Bearer " + apiKey } });
             let torrent = list.data.find(t => t.hash.toLowerCase() === hash.toLowerCase());
             
             // Retry-Logic
             if (!torrent) {
                 await new Promise(resolve => setTimeout(resolve, 2500));
-                list = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: `Bearer ${apiKey}` } });
+                list = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: "Bearer " + apiKey } });
                 torrent = list.data.find(t => t.hash.toLowerCase() === hash.toLowerCase());
             }
 
             if (torrent) {
-                const info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+                const info = await axios.get("https://api.real-debrid.com/rest/1.0/torrents/info/" + torrent.id, { headers: { Authorization: "Bearer " + apiKey } });
                 const fileIdx = info.data.files.findIndex(f => f.id == fileId);
                 
                 if (fileIdx !== -1) {
@@ -107,7 +111,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
                     }
 
                     if (targetLink) {
-                        const unrestrict = await axios.post("https://api.real-debrid.com/rest/1.0/unrestrict/link", new URLSearchParams({ link: targetLink }), { headers: { Authorization: `Bearer ${apiKey}` } });
+                        const unrestrict = await axios.post("https://api.real-debrid.com/rest/1.0/unrestrict/link", new URLSearchParams({ link: targetLink }), { headers: { Authorization: "Bearer " + apiKey } });
                         downloadUrl = unrestrict.data.download;
                     }
                 }
@@ -117,10 +121,10 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
             // Retry-Logic for Torbox
             let dlRes = null;
             try {
-                dlRes = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&hash=${hash}&file_id=${fileId}`);
+                dlRes = await axios.get("https://api.torbox.app/v1/api/torrents/requestdl?token=" + apiKey + "&hash=" + hash + "&file_id=" + fileId);
             } catch (err) {
                 await new Promise(resolve => setTimeout(resolve, 2500));
-                dlRes = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&hash=${hash}&file_id=${fileId}`);
+                dlRes = await axios.get("https://api.torbox.app/v1/api/torrents/requestdl?token=" + apiKey + "&hash=" + hash + "&file_id=" + fileId);
             }
 
             if (dlRes && dlRes.data && dlRes.data.data) {
@@ -140,7 +144,6 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
             return;
         }
 
-        // Safely extract the genuine MIME type from upstream providers instead of guessing via regex
         const upstreamMime = subResponse.headers["content-type"];
         const ext = fileName.split(".").pop().toLowerCase();
         let fallbackMime = "text/plain";
@@ -148,15 +151,19 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
         else if (ext === "ass" || ext === "ssa") fallbackMime = "text/x-ssa";
         else if (ext === "srt") fallbackMime = "application/x-subrip";
         
-        res.set("Content-Type", upstreamMime || fallbackMime);
+        let finalMime = upstreamMime;
+        if (!finalMime || finalMime.includes("octet-stream")) {
+            finalMime = fallbackMime;
+        }
+        
+        res.set("Content-Type", finalMime);
         
         // Prevent socket memory leaks if the download errors out
         subResponse.data.on("error", (err) => {
-            console.error(`[Stream Error] Subtitle stream aborted: ${err.message}`);
+            console.error("[Stream Error] Subtitle stream aborted: " + err.message);
             res.end();
         });
         
-        // Prevent background bandwidth leaks if the Stremio client closes the connection during streaming
         req.on("close", () => {
             if (subResponse && subResponse.data && typeof subResponse.data.destroy === "function") {
                 subResponse.data.destroy();
@@ -165,19 +172,25 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
         
         subResponse.data.pipe(res);
     } catch (e) { 
-        console.error(`[Subtitle Error] Failed to fetch subtitle: ${e.message}`);
+        console.error("[Subtitle Error] Failed to fetch subtitle: " + e.message);
         res.status(500).send("Error fetching subtitle data"); 
     }
 });
-    
+
+//===============
 // Displays a loading video whilst the Provider is processing the torrent.
+// Safely integrates with Express static middleware to ensure correct HTTP Range headers.
+//===============
 function serveLoadingVideo(req, res) {
-    res.redirect("/waiting.mp4");
+    res.redirect(BASE_URL + "/waiting.mp4");
 }
 
+//===============
 // Displays an information video if the torrent contains only useless archives.
+// Safely integrates with Express static middleware to ensure correct HTTP Range headers.
+//===============
 function serveArchiveVideo(req, res) {
-    res.redirect("/archive.mp4");
+    res.redirect(BASE_URL + "/archive.mp4");
 }
 
 //===============
@@ -187,29 +200,24 @@ function serveArchiveVideo(req, res) {
 app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
     const { provider, apiKey, hash, episode } = req.params;
     const requestedEp = episode || "1";
-    const magnet = `magnet:?xt=urn:btih:${hash}`;
+    const magnet = "magnet:?xt=urn:btih:" + hash;
     
     try {
         if (provider === "realdebrid") {
-            const listRes = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: `Bearer ${apiKey}` } });
+            const listRes = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: "Bearer " + apiKey } });
             let torrent = listRes.data.find(t => t.hash.toLowerCase() === hash.toLowerCase());
             
             if (!torrent) {
-                try {
-                    const add = await axios.post("https://api.real-debrid.com/rest/1.0/torrents/addMagnet", new URLSearchParams({ magnet }), { headers: { Authorization: `Bearer ${apiKey}` } });
-                    torrent = { id: add.data.id };
-                } catch (addError) {
-                    console.error(`[Real-Debrid] Failed to create torrent: ${addError.message}`);
-                    return res.status(500).send("Real-Debrid API Error: Cannot add torrent.");
-                }
+                const add = await axios.post("https://api.real-debrid.com/rest/1.0/torrents/addMagnet", new URLSearchParams({ magnet }), { headers: { Authorization: "Bearer " + apiKey } });
+                torrent = { id: add.data.id };
             }
             
-            let info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+            let info = await axios.get("https://api.real-debrid.com/rest/1.0/torrents/info/" + torrent.id, { headers: { Authorization: "Bearer " + apiKey } });
             
             // Catch dead or invalid torrents immediately to avoid infinite loading loops
             const badStates = ["magnet_error", "error", "virus", "dead"];
             if (badStates.includes(info.data.status)) {
-                await axios.delete(`https://api.real-debrid.com/rest/1.0/torrents/delete/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } }).catch(() => null);
+                await axios.delete("https://api.real-debrid.com/rest/1.0/torrents/delete/" + torrent.id, { headers: { Authorization: "Bearer " + apiKey } }).catch(() => null);
                 return res.status(404).send("Torrent is dead or invalid.");
             }
             
@@ -217,7 +225,6 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
                 if (info.data.status === "waiting_files_selection") {
                     const selectedIds = [];
 
-                    // Automatically select all relevant video and subtitle files to prevent episode lockouts
                     info.data.files.forEach(f => {
                         const name = (f.path || f.name || "").toLowerCase();
                         if (/\.(mkv|mp4|avi|wmv|flv|webm|m4v|ts|m2ts|mov|ass|srt|ssa|vtt|sub|idx)$/.test(name)) {
@@ -229,13 +236,13 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
                     
                     await axios.post("https://api.real-debrid.com/rest/1.0/torrents/selectFiles/" + torrent.id, bodyString, { 
                         headers: { 
-                            Authorization: `Bearer ${apiKey}`,
+                            Authorization: "Bearer " + apiKey,
                             "Content-Type": "application/x-www-form-urlencoded"
                         } 
                     });
 
                     await new Promise(resolve => setTimeout(resolve, 1500));
-                    info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+                    info = await axios.get("https://api.real-debrid.com/rest/1.0/torrents/info/" + torrent.id, { headers: { Authorization: "Bearer " + apiKey } });
                 }
                 
                 if (info.data.status !== "downloaded") {
@@ -251,8 +258,8 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
             
             // Resolves the edge case where a legacy torrent has an unselected episode
             if (bestFileFresh.selected === 0) {
-                console.log(`[Resolve] Unselected episode detected. Re-adding torrent to trigger selection.`);
-                await axios.delete(`https://api.real-debrid.com/rest/1.0/torrents/delete/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } }).catch(() => null);
+                console.log("[Resolve] Unselected episode detected. Re-adding torrent to trigger selection.");
+                await axios.delete("https://api.real-debrid.com/rest/1.0/torrents/delete/" + torrent.id, { headers: { Authorization: "Bearer " + apiKey } }).catch(() => null);
                 return res.redirect(req.originalUrl);
             }
             
@@ -276,21 +283,25 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
                  return serveLoadingVideo(req, res);
             }
 
-            const unrestrict = await axios.post("https://api.real-debrid.com/rest/1.0/unrestrict/link", new URLSearchParams({ link: targetLink }), { headers: { Authorization: `Bearer ${apiKey}` } });
+            const unrestrict = await axios.post("https://api.real-debrid.com/rest/1.0/unrestrict/link", new URLSearchParams({ link: targetLink }), { headers: { Authorization: "Bearer " + apiKey } });
             return res.redirect(unrestrict.data.download);
         }
         
         if (provider === "torbox") {
-            const list = await axios.get("https://api.torbox.app/v1/api/torrents/mylist?bypass_cache=true", { headers: { Authorization: `Bearer ${apiKey}` } });
+            const list = await axios.get("https://api.torbox.app/v1/api/torrents/mylist?bypass_cache=true", { headers: { Authorization: "Bearer " + apiKey } });
             let torrent = list.data.data ? list.data.data.find(t => t.hash.toLowerCase() === hash.toLowerCase()) : null;
             
             if (!torrent) {
                 const boundary = "----WebKitFormBoundaryYomi";
                 try {
-                    await axios.post("https://api.torbox.app/v1/api/torrents/createtorrent", `--${boundary}\r\nContent-Disposition: form-data; name="magnet"\r\n\r\n${magnet}\r\n--${boundary}--`, { headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": `multipart/form-data; boundary=${boundary}` } });
+                    await axios.post("https://api.torbox.app/v1/api/torrents/createtorrent", "--" + boundary + "\r\nContent-Disposition: form-data; name=\"magnet\"\r\n\r\n" + magnet + "\r\n--" + boundary + "--", { headers: { Authorization: "Bearer " + apiKey, "Content-Type": "multipart/form-data; boundary=" + boundary } });
                 } catch (postError) {
-                    console.error(`[Torbox] Failed to create torrent: ${postError.message}`);
-                    return res.status(500).send("Torbox API Error: Cannot add torrent.");
+                    console.error("[Torbox] Failed to create torrent: " + postError.message);
+                    // Abort immediately on severe API rejections
+                    if (postError.response && postError.response.status === 403) {
+                         return res.status(403).send("API Key invalid.");
+                    }
+                    return serveLoadingVideo(req, res);
                 }
                 return serveLoadingVideo(req, res);
             }
@@ -308,14 +319,21 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
                 return serveArchiveVideo(req, res);
             }
             
-            const dl = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&torrent_id=${torrent.id}&file_id=${bestFile.id}`);
+            const dl = await axios.get("https://api.torbox.app/v1/api/torrents/requestdl?token=" + apiKey + "&torrent_id=" + torrent.id + "&file_id=" + bestFile.id);
             return res.redirect(dl.data.data);
         }
     } catch (e) { 
-        console.error(`[Resolve Error] Core resolution failure: ${e.message}`);
-        return res.status(500).send("Stream resolution failed internally."); 
+        console.error("[Resolve Error] Core resolution failure: " + e.message);
+        
+        // If the API Key is invalid or Premium is expired, halt the stream immediately to stop abuse.
+        if (e.response && e.response.status === 403) {
+            return res.status(403).send("Real-Debrid API Key invalid or Premium subscription expired.");
+        }
+        
+        // For rate limits (429) or network timeouts, redirect to the loading video to force a Stremio retry loop.
+        return serveLoadingVideo(req, res); 
     }
 });
 
 app.use("/", getRouter(addonInterface));
-app.listen(port, () => console.log(`YOMI ONLINE | PORT ${port}`));
+app.listen(port, () => console.log("YOMI ONLINE | PORT " + port));
