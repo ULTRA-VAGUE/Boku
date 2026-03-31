@@ -52,7 +52,7 @@ app.get("/configure", (req, res) => {
 //===============
 // SUBTITLE PROXY
 // Downloads subtitles directly and streams them to the client.
-// Includes retry logic to avoid race conditions with the resolve endpoint.
+// Includes retry logic and offset calculations to prevent array-out-of-bounds crashes.
 //===============
 app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -79,9 +79,32 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
                 const fileIdx = info.data.files.findIndex(f => f.id == fileId);
                 
                 if (fileIdx !== -1) {
-                    fileName = info.data.files[fileIdx].path;
-                    const unrestrict = await axios.post("https://api.real-debrid.com/rest/1.0/unrestrict/link", new URLSearchParams({ link: info.data.links[fileIdx] }), { headers: { Authorization: `Bearer ${apiKey}` } });
-                    downloadUrl = unrestrict.data.download;
+                    const targetFile = info.data.files[fileIdx];
+                    
+                    // Verify that the subtitle file was actually selected during the resolve phase
+                    if (targetFile.selected === 0) {
+                        return res.status(404).send("Subtitle not selected in Debrid");
+                    }
+
+                    fileName = targetFile.path;
+                    let targetLink = null;
+                    let linkCounter = 0;
+                    
+                    // Real-Debrid maps links ONLY to selected files, not all files. Calculate the correct offset.
+                    for (let i = 0; i < info.data.files.length; i++) {
+                        if (i === fileIdx) {
+                            targetLink = info.data.links[linkCounter];
+                            break;
+                        }
+                        if (info.data.files[i].selected === 1) {
+                            linkCounter++;
+                        }
+                    }
+
+                    if (targetLink) {
+                        const unrestrict = await axios.post("https://api.real-debrid.com/rest/1.0/unrestrict/link", new URLSearchParams({ link: targetLink }), { headers: { Authorization: `Bearer ${apiKey}` } });
+                        downloadUrl = unrestrict.data.download;
+                    }
                 }
             }
         } else if (provider === "torbox") {
@@ -111,6 +134,13 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
         res.set("Content-Type", mime);
 
         const subResponse = await axios.get(downloadUrl, { responseType: "stream" });
+        
+        // Prevent socket memory leaks if the client aborts the connection mid-download
+        subResponse.data.on("error", (err) => {
+            console.error(`[Stream Error] Subtitle stream aborted: ${err.message}`);
+            res.end();
+        });
+        
         subResponse.data.pipe(res);
     } catch (e) { 
         console.error(`[Subtitle Error] Failed to fetch subtitle: ${e.message}`);
@@ -219,7 +249,7 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
                  return serveLoadingVideo(req, res);
             }
 
-            const unrestrict = await axios.post("https://api.real-debrid.com/rest/1.0/unrestrict/link", newSearchParams({ link: targetLink }), { headers: { Authorization: `Bearer ${apiKey}` } });
+            const unrestrict = await axios.post("https://api.real-debrid.com/rest/1.0/unrestrict/link", new URLSearchParams({ link: targetLink }), { headers: { Authorization: `Bearer ${apiKey}` } });
             return res.redirect(unrestrict.data.download);
         }
         
