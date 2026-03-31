@@ -52,17 +52,21 @@ app.get("/configure", (req, res) => {
 //===============
 // SUBTITLE PROXY
 // Downloads subtitles directly and streams them to the client.
-// Includes critical bandwidth-leak protections and strict MIME parsing.
+// Includes critical bandwidth-leak protections and strict upstream MIME parsing.
 //===============
 app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "*");
     const { provider, apiKey, hash, fileId } = req.params;
     
+    // Flag to detect early client disconnection and prevent dangling streams
+    let clientAborted = false;
+    req.on("close", () => {
+        clientAborted = true;
+    });
+    
     try {
         let downloadUrl = null;
-        
-        // Read the actual filename from query to ensure correct MIME type parsing for Torbox
         let fileName = req.query.filename || "sub.srt";
         
         if (provider === "realdebrid") {
@@ -83,12 +87,10 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
                 if (fileIdx !== -1) {
                     const targetFile = info.data.files[fileIdx];
                     
-                    // Verify that the subtitle file was actually selected during the resolve phase
                     if (targetFile.selected === 0) {
                         return res.status(404).send("Subtitle not selected in Debrid");
                     }
 
-                    // Real-Debrid accurately provides the true path, overriding the query parameter
                     fileName = targetFile.path;
                     let targetLink = null;
                     let linkCounter = 0;
@@ -111,7 +113,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
                 }
             }
         } else if (provider === "torbox") {
-            
+
             // Retry-Logic for Torbox
             let dlRes = null;
             try {
@@ -128,15 +130,25 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
         
         if (!downloadUrl) return res.status(404).send("Subtitle not found or not ready yet.");
         
-        const ext = fileName.split(".").pop().toLowerCase();
-        let mime = "text/plain";
-        if (ext === "vtt") mime = "text/vtt";
-        else if (ext === "ass" || ext === "ssa") mime = "text/x-ssa";
-        else if (ext === "srt") mime = "application/x-subrip";
-        
-        res.set("Content-Type", mime);
-
         const subResponse = await axios.get(downloadUrl, { responseType: "stream" });
+        
+        // If the client aborted during the async await cycles, destroy the stream immediately to save bandwidth
+        if (clientAborted) {
+            if (subResponse.data && typeof subResponse.data.destroy === "function") {
+                subResponse.data.destroy();
+            }
+            return;
+        }
+
+        // Safely extract the genuine MIME type from upstream providers instead of guessing via regex
+        const upstreamMime = subResponse.headers["content-type"];
+        const ext = fileName.split(".").pop().toLowerCase();
+        let fallbackMime = "text/plain";
+        if (ext === "vtt") fallbackMime = "text/vtt";
+        else if (ext === "ass" || ext === "ssa") fallbackMime = "text/x-ssa";
+        else if (ext === "srt") fallbackMime = "application/x-subrip";
+        
+        res.set("Content-Type", upstreamMime || fallbackMime);
         
         // Prevent socket memory leaks if the download errors out
         subResponse.data.on("error", (err) => {
@@ -144,7 +156,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
             res.end();
         });
         
-        // Prevent background bandwidth leaks if the Stremio client closes the connection early
+        // Prevent background bandwidth leaks if the Stremio client closes the connection during streaming
         req.on("close", () => {
             if (subResponse && subResponse.data && typeof subResponse.data.destroy === "function") {
                 subResponse.data.destroy();
@@ -183,8 +195,13 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
             let torrent = listRes.data.find(t => t.hash.toLowerCase() === hash.toLowerCase());
             
             if (!torrent) {
-                const add = await axios.post("https://api.real-debrid.com/rest/1.0/torrents/addMagnet", new URLSearchParams({ magnet }), { headers: { Authorization: `Bearer ${apiKey}` } });
-                torrent = { id: add.data.id };
+                try {
+                    const add = await axios.post("https://api.real-debrid.com/rest/1.0/torrents/addMagnet", new URLSearchParams({ magnet }), { headers: { Authorization: `Bearer ${apiKey}` } });
+                    torrent = { id: add.data.id };
+                } catch (addError) {
+                    console.error(`[Real-Debrid] Failed to create torrent: ${addError.message}`);
+                    return res.status(500).send("Real-Debrid API Error: Cannot add torrent.");
+                }
             }
             
             let info = await axios.get(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrent.id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
@@ -269,7 +286,12 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
             
             if (!torrent) {
                 const boundary = "----WebKitFormBoundaryYomi";
-                await axios.post("https://api.torbox.app/v1/api/torrents/createtorrent", `--${boundary}\r\nContent-Disposition: form-data; name="magnet"\r\n\r\n${magnet}\r\n--${boundary}--`, { headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": `multipart/form-data; boundary=${boundary}` } });
+                try {
+                    await axios.post("https://api.torbox.app/v1/api/torrents/createtorrent", `--${boundary}\r\nContent-Disposition: form-data; name="magnet"\r\n\r\n${magnet}\r\n--${boundary}--`, { headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": `multipart/form-data; boundary=${boundary}` } });
+                } catch (postError) {
+                    console.error(`[Torbox] Failed to create torrent: ${postError.message}`);
+                    return res.status(500).send("Torbox API Error: Cannot add torrent.");
+                }
                 return serveLoadingVideo(req, res);
             }
             
@@ -289,7 +311,10 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
             const dl = await axios.get(`https://api.torbox.app/v1/api/torrents/requestdl?token=${apiKey}&torrent_id=${torrent.id}&file_id=${bestFile.id}`);
             return res.redirect(dl.data.data);
         }
-    } catch (e) { return serveLoadingVideo(req, res); }
+    } catch (e) { 
+        console.error(`[Resolve Error] Core resolution failure: ${e.message}`);
+        return res.status(500).send("Stream resolution failed internally."); 
+    }
 });
 
 app.use("/", getRouter(addonInterface));
