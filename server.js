@@ -26,6 +26,7 @@ const port = process.env.PORT || 7000;
 let BASE_URL = process.env.BASE_URL || "http://127.0.0.1:7000";
 BASE_URL = BASE_URL.replace(/\/+$/, "");
 
+
 // API status endpoint for platforms such as Heroku or Koyeb
 app.get("/health", (req, res) => res.status(200).json({ status: "alive" }));
 
@@ -68,6 +69,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
     res.setHeader("Access-Control-Allow-Headers", "*");
     const { provider, apiKey, hash, fileId } = req.params;
     
+    
     // Flag to detect early client disconnection and prevent dangling streams
     let clientAborted = false;
     req.on("close", () => {
@@ -81,6 +83,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
         if (provider === "realdebrid") {
             let list = await axios.get("https://api.real-debrid.com/rest/1.0/torrents?limit=250", { headers: { Authorization: "Bearer " + apiKey } });
             let torrent = list.data.find(t => t.hash.toLowerCase() === hash.toLowerCase());
+            
             
             // Retry-Logic
             if (!torrent) {
@@ -104,6 +107,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
                     let targetLink = null;
                     let linkCounter = 0;
                     
+                    
                     // Real-Debrid maps links ONLY to selected files, not all files. Calculate the correct offset.
                     for (let i = 0; i < info.data.files.length; i++) {
                         if (i === fileIdx) {
@@ -123,6 +127,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
             }
         } else if (provider === "torbox") {
 
+            
             // Retry-Logic for Torbox
             let dlRes = null;
             try {
@@ -140,6 +145,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
         if (!downloadUrl) return res.status(404).send("Subtitle not found or not ready yet.");
         
         const subResponse = await axios.get(downloadUrl, { responseType: "stream" });
+        
         
         // If the client aborted during the async await cycles, destroy the stream immediately to save bandwidth
         if (clientAborted) {
@@ -163,6 +169,7 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
         
         res.set("Content-Type", finalMime);
         
+        
         // Prevent socket memory leaks if the download errors out
         subResponse.data.on("error", (err) => {
             console.error("[Stream Error] Subtitle stream aborted: " + err.message);
@@ -184,17 +191,25 @@ app.get("/sub/:provider/:apiKey/:hash/:fileId", async (req, res) => {
     
 //===============
 // Displays a loading video whilst the Provider is processing the torrent.
-// Safely integrates with Express static middleware to ensure correct HTTP Range headers.
+// Uses strict no-store headers to prevent Stremio from caching the redirect loop.
 //===============
 function serveLoadingVideo(req, res) {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
+    res.set("Surrogate-Control", "no-store");
     res.redirect(BASE_URL + "/waiting.mp4");
 }
 
 //===============
 // Displays an information video if the torrent contains only useless archives.
-// Safely integrates with Express static middleware to ensure correct HTTP Range headers.
+// Uses strict no-store headers to prevent Stremio from caching the redirect loop.
 //===============
 function serveArchiveVideo(req, res) {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
+    res.set("Surrogate-Control", "no-store");
     res.redirect(BASE_URL + "/archive.mp4");
 }
 
@@ -217,12 +232,13 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
                     const add = await axios.post("https://api.real-debrid.com/rest/1.0/torrents/addMagnet", new URLSearchParams({ magnet }), { headers: { Authorization: "Bearer " + apiKey } });
                     torrent = { id: add.data.id };
                 } catch (addError) {
-                    console.error(`[Real-Debrid] Failed to create torrent: ${addError.message}`);
+                    console.error("[Real-Debrid] Failed to create torrent: " + addError.message);
                     return res.status(500).send("Real-Debrid API Error: Cannot add torrent.");
                 }
             }
             
             let info = await axios.get("https://api.real-debrid.com/rest/1.0/torrents/info/" + torrent.id, { headers: { Authorization: "Bearer " + apiKey } });
+            
             
             // Catch dead or invalid torrents immediately to avoid infinite loading loops
             const badStates = ["magnet_error", "error", "virus", "dead"];
@@ -237,7 +253,7 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
 
                     info.data.files.forEach(f => {
                         const name = (f.path || f.name || "").toLowerCase();
-                        if (/\.(mkv|mp4|avi|wmv|flv|webm|m4v|ts|m2ts|mov|ass|srt|ssa|vtt|sub|idx)$/.test(name)) {
+                        if (/\.(mkv|mp4|avi|wmv|flv|webm|m4v|ts|m2ts|mov|ass|srt|ssa|vtt)$/.test(name)) {
                             selectedIds.push(f.id);
                         }
                     });
@@ -265,6 +281,7 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
             if (!bestFileFresh) {
                 return serveArchiveVideo(req, res);
             }
+            
             
             // Resolves the edge case where a legacy torrent has an unselected episode
             if (bestFileFresh.selected === 0) {
@@ -315,7 +332,6 @@ app.get("/resolve/:provider/:apiKey/:hash/:episode?", async (req, res) => {
                 return serveLoadingVideo(req, res);
             }
             
-            // Catch dead or invalid Torbox torrents to prevent infinite Stremio loading loops
             const tbBadStates = ["error", "failed", "dead", "deleted"];
             if (tbBadStates.includes(torrent.download_state)) {
                 return res.status(404).send("Torrent is dead or invalid in Torbox.");
