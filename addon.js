@@ -342,7 +342,10 @@ builder.defineStreamHandler(async ({ id, config }) => {
             }
 
             const { res, lang } = extractTags(t.title);
-            const bytes = parseFloat(t.size) * 1024 * 1024 * 1024;
+            
+            // Robust calculation to prevent NaN crashes from unresolved torrent sizes like "? GB"
+            const parsedSize = parseFloat(t.size);
+            const bytes = isNaN(parsedSize) ? 0 : parsedSize * 1024 * 1024 * 1024;
             
             const buildSubs = (fileList, provider, apiKey, currentEp) => {
                 if (!fileList) return [];
