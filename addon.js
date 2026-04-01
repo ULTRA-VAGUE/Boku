@@ -407,7 +407,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
                     .filter(f => {
                         const name = f.name || f.path || "";
                         
-                        : .idx and .sub (VobSub) are strictly filtered out here as they crash the Stremio web player
+        				// .idx and .sub (VobSub) are strictly filtered out here as they crash the Stremio web player
                         if (!/\.(ass|srt|ssa|vtt)$/i.test(name)) return false;
                         const extEp = extractEpisodeNumber(name);
                         if (extEp !== null) {
