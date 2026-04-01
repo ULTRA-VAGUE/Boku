@@ -1,7 +1,7 @@
 //===============
 // YOMI STREMIO ADDON - CORE LOGIC
 // The main entry point for the Stremio logic.
-// Includes backwards compatibility to migrate legacy library items to isolated namespaces.
+// Strictly uses standard prefixes (anilist: / sukebei:) to ensure native Stremio compatibility.
 // Integrates safe Base64 polyfills to prevent Node.js version crashes.
 //===============
 
@@ -33,15 +33,15 @@ function fromBase64Safe(str) {
 //===============
 const manifest = {
     id: "org.community.yomi",
-    version: "5.2.7",
+    version: "5.2.8",
     name: "Yomi",
     logo: "https://github.com/mralanbourne/Yomi/blob/main/static/yomi.png?raw=true", 
     description: "The ultimate Debrid-powered Sukebei gateway. Streams raw, uncompressed Hentai & NSFW Anime directly via Real-Debrid or Torbox. Smart-parsing tames chaotic torrent names for a clean catalog. Pure quality, zero buffering. Info: github.com/mralanbourne/Yomi",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
     
-    // CRITICAL: Includes isolated prefixes for new items, but maintains legacy prefixes to prevent breaking user libraries
-    idPrefixes: ["yomi-al:", "yomi-suk:", "anilist:", "sukebei:"],
+    // Restored standard native prefixes
+    idPrefixes: ["anilist:", "sukebei:"],
     catalogs: [
         { id: "sukebei_trending", type: "series", name: "Yomi Trending" },
         { id: "sukebei_top", type: "series", name: "Yomi Top Rated" },
@@ -158,7 +158,7 @@ builder.defineCatalogHandler(async ({ id, extra, config }) => {
         Object.keys(rawGroups).forEach(cleanName => {
             if (!anilistMetas.some(m => m.name.toLowerCase().includes(cleanName.toLowerCase()))) {
                 finalMetas.push({ 
-                    id: "yomi-suk:" + toBase64Safe(cleanName), 
+                    id: "sukebei:" + toBase64Safe(cleanName), 
                     type: "series", 
                     name: cleanName.replace(/^\[.*?\]\s*/g, "").trim(), 
                     poster: generateDynamicPoster(cleanName) 
@@ -171,9 +171,7 @@ builder.defineCatalogHandler(async ({ id, extra, config }) => {
 });
 
 builder.defineMetaHandler(async ({ id }) => {
-    
-    // Legacy support to prevent breaking items saved in the user's Stremio library
-    if (!id.startsWith("yomi-al:") && !id.startsWith("yomi-suk:") && !id.startsWith("anilist:") && !id.startsWith("sukebei:")) {
+    if (!id.startsWith("anilist:") && !id.startsWith("sukebei:")) {
         return Promise.resolve({ meta: null });
     }
 
@@ -183,7 +181,7 @@ builder.defineMetaHandler(async ({ id }) => {
     let searchTitle = "";
 
     try {
-        if (id.startsWith("yomi-al:") || id.startsWith("anilist:")) {
+        if (id.startsWith("anilist:")) {
             const parts = id.split(":");
             let aniListId = parts[1];
             
@@ -196,7 +194,7 @@ builder.defineMetaHandler(async ({ id }) => {
             if (rawMeta) {
                 searchTitle = rawMeta.name;
                 meta = {
-                    id: id.startsWith("anilist:") ? "yomi-al:" + aniListId + ":" + toBase64Safe(rawMeta.name) : id,
+                    id: id,
                     type: rawMeta.type,
                     name: rawMeta.name,
                     poster: rawMeta.poster,
@@ -211,20 +209,18 @@ builder.defineMetaHandler(async ({ id }) => {
                     ? fromBase64Safe(parts[2]) 
                     : "Unknown Anime";
                 
-                meta = { id: id.startsWith("anilist:") ? id.replace("anilist:", "yomi-al:") : id, type: "series", name: searchTitle, poster: generateDynamicPoster(searchTitle) };
+                meta = { id: id, type: "series", name: searchTitle, poster: generateDynamicPoster(searchTitle) };
             }
-        } else if (id.startsWith("yomi-suk:") || id.startsWith("sukebei:")) {
+        } else if (id.startsWith("sukebei:")) {
             const parts = id.split(":");
             const base64Str = parts[1];
             searchTitle = base64Str ? fromBase64Safe(base64Str) : "Unknown";
             let cleanQuery = searchTitle.replace(/^\[.*?\]\s*/g, "").replace(/\[.*?\]/g, "").replace(/\(.*?\)/g, "").trim();
             const malData = await getJikanMeta(cleanQuery);
             
-            const targetId = id.startsWith("sukebei:") ? id.replace("sukebei:", "yomi-suk:") : id;
-            
             if (malData) {
                 meta = { 
-                    id: targetId, 
+                    id, 
                     type: "series", 
                     name: searchTitle.replace(/^\[.*?\]\s*/g, "").trim(), 
                     poster: malData.poster || generateDynamicPoster(searchTitle),
@@ -235,7 +231,7 @@ builder.defineMetaHandler(async ({ id }) => {
                     episodes: malData.episodes
                 };
             } else {
-                meta = { id: targetId, type: "series", name: searchTitle.replace(/^\[.*?\]\s*/g, "").trim(), poster: generateDynamicPoster(searchTitle) };
+                meta = { id, type: "series", name: searchTitle.replace(/^\[.*?\]\s*/g, "").trim(), poster: generateDynamicPoster(searchTitle) };
             }
         }
         
@@ -261,27 +257,22 @@ builder.defineMetaHandler(async ({ id }) => {
         const videos = [];
         const episodeThumbnail = meta.background || meta.poster || "https://dummyimage.com/600x337/1a1a1a/e91e63.png?text=YOMI+EPISODE";
         
-        
-        // Automatically migrate legacy video IDs to the isolated namespace format
-        const finalId = meta.id;
         for (let i = 1; i <= epCount; i++) {
-            videos.push({ id: finalId + ":1:" + i, title: "Episode " + i, season: 1, episode: i, released: new Date().toISOString(), thumbnail: episodeThumbnail });
+            videos.push({ id: meta.id + ":1:" + i, title: "Episode " + i, season: 1, episode: i, released: new Date().toISOString(), thumbnail: episodeThumbnail });
         }
         meta.videos = videos;
         return { meta, cacheMaxAge: 604800 };
     } catch (err) {
         console.error("[Meta Error] Crashed during meta generation: " + err.message);
         return { 
-            meta: { id: id.replace("anilist:", "yomi-al:").replace("sukebei:", "yomi-suk:"), type: "series", name: "Unknown (Error)", poster: generateDynamicPoster("Error") }, 
+            meta: { id, type: "series", name: "Unknown (Error)", poster: generateDynamicPoster("Error") }, 
             cacheMaxAge: 60 
         };
     }
 });
 
 builder.defineStreamHandler(async ({ id, config }) => {
-    
-    // Accepts legacy prefixes to support older library streams before the migration
-    if (!id.startsWith("yomi-al:") && !id.startsWith("yomi-suk:") && !id.startsWith("anilist:") && !id.startsWith("sukebei:")) return Promise.resolve({ streams: [] });
+    if (!id.startsWith("anilist:") && !id.startsWith("sukebei:")) return Promise.resolve({ streams: [] });
     
     console.log("[Stream Request] Processing request for ID: " + id);
 
@@ -290,7 +281,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
         let searchTitle = "", requestedEp = 1;
         let aniListIdForFallback = null;
         
-        if (id.startsWith("yomi-al:") || id.startsWith("anilist:")) {
+        if (id.startsWith("anilist:")) {
             const parts = id.split(":");
             aniListIdForFallback = isNaN(parts[1]) ? parts.find(p => !isNaN(p) && p.length > 0) : parts[1];
             
@@ -306,7 +297,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
             const lastPart = parts[parts.length - 1];
             if (!isNaN(lastPart) && parts.length > 2) requestedEp = parseInt(lastPart, 10);
 
-        } else if (id.startsWith("yomi-suk:") || id.startsWith("sukebei:")) {
+        } else if (id.startsWith("sukebei:")) {
             const parts = id.split(":");
             searchTitle = parts[1] ? sanitizeSearchQuery(fromBase64Safe(parts[1])) : "";
             if (parts.length >= 4) requestedEp = parseInt(parts[3], 10);
@@ -328,7 +319,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
 
             if (aniListIdForFallback) {
                 fallbackMeta = await getAnimeMeta(aniListIdForFallback);
-            } else if (id.startsWith("yomi-suk:") || id.startsWith("sukebei:")) {
+            } else if (id.startsWith("sukebei:")) {
                 let cleanQuery = searchTitle.replace(/^\[.*?\]\s*/g, "").replace(/\[.*?\]/g, "").replace(/\(.*?\)/g, "").trim();
                 fallbackMeta = await getJikanMeta(cleanQuery);
             }
@@ -416,7 +407,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
                     .filter(f => {
                         const name = f.name || f.path || "";
                         
-                        // CRITICAL: .idx and .sub (VobSub) are strictly filtered out here as they crash the Stremio web player
+                        : .idx and .sub (VobSub) are strictly filtered out here as they crash the Stremio web player
                         if (!/\.(ass|srt|ssa|vtt)$/i.test(name)) return false;
                         const extEp = extractEpisodeNumber(name);
                         if (extEp !== null) {
