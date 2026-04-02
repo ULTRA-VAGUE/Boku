@@ -1,7 +1,7 @@
 //===============
 // YOMI STREMIO ADDON - CORE LOGIC
 // The main entry point for the Stremio logic.
-// Version 5.2.11: Fixed Base64 payload parsing and synchronized sorting logic with Amatsu.
+// Version 6.7.0: 100% Amatsu-Parity restore for unminified, reliable episode metadata extraction.
 //===============
 
 const { addonBuilder } = require("stremio-addon-sdk");
@@ -26,10 +26,10 @@ function fromBase64Safe(str) {
 //===============
 const manifest = {
     id: "org.community.yomi",
-    version: "6.6.6",
+    version: "6.7.0",
     name: "Yomi",
     logo: BASE_URL + "/yomi.png", 
-    description: "The ultimate Debrid-powered Sukebei gateway. Streams raw, uncompressed Hentai & NSFW Anime directly via Real-Debrid or Torbox.",
+    description: "The ultimate Debrid-powered Sukebei gateway. Streams raw, uncompressed Hentai & NSFW Anime directly via Real-Debrid or Torbox. Smart-parsing tames chaotic torrent names for a clean catalog. Pure quality, zero buffering.",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
     idPrefixes: ["yomi:", "anilist:", "sukebei:"],
@@ -38,7 +38,6 @@ const manifest = {
         { id: "sukebei_top", type: "series", name: "Yomi Top Rated" },
         { id: "sukebei_search", type: "series", name: "Yomi Search", extra: [{ name: "search", isRequired: true }] }
     ],
-    // Key matches the frontend payload 'Yomi'
     config: [
         { key: "Yomi", type: "text", title: "Yomi Internal Payload", required: false }
     ],
@@ -47,7 +46,6 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// Correctly unpacks { Yomi: base64 }
 function parseConfig(config) {
     let parsed = {};
     try {
@@ -60,7 +58,7 @@ function parseConfig(config) {
             parsed = config || {};
         }
     } catch (err) {
-        console.error("[Config] PARSING ERROR:", err.message);
+        console.error("[Config] CRITICAL PARSING ERROR:", err.message);
     }
     return parsed || {};
 }
@@ -124,7 +122,7 @@ function generateDynamicPoster(title) {
     let lines = [];
     let line = "";
     for (let word of words) {
-        if ((line + word).length > 10) {
+        if ((line + word).length > 12) {
             if (line) lines.push(line.trim());
             line = word + " ";
         } else { line += word + " "; }
@@ -139,7 +137,6 @@ function generateDynamicPoster(title) {
 
 builder.defineCatalogHandler(async ({ id, extra, config }) => {
     const userConfig = parseConfig(config);
-    
     if (id === "sukebei_trending") {
         if (userConfig.showTrending === false) return { metas: [] };
         return { metas: await getTrendingAdultAnime(), cacheMaxAge: 43200 };
@@ -164,18 +161,18 @@ builder.defineCatalogHandler(async ({ id, extra, config }) => {
         const rawGroups = {};
         
         sukebeiTorrents.forEach(t => {
-            const cleanName = cleanTorrentTitle(t.title);
+            let cleanName = cleanTorrentTitle(t.title);
             if (cleanName.length > 2 && !rawGroups[cleanName]) rawGroups[cleanName] = t;
         });
         
         Object.keys(rawGroups).forEach(cleanName => {
-            if (!anilistMetas.some(m => m.name.toLowerCase().includes(cleanName.toLowerCase()))) {
-                finalMetas.push({ 
-                    id: "sukebei:" + toBase64Safe(cleanName), 
-                    type: "series", 
-                    name: cleanName.replace(/^\[.*?\]\s*/g, "").trim(), 
-                    poster: generateDynamicPoster(cleanName) 
-                });
+            const isAlreadyInAnilist = anilistMetas.some(m => {
+                const aName = m.name.toLowerCase();
+                const cName = cleanName.toLowerCase();
+                return aName.includes(cName) || cName.includes(aName);
+            });
+            if (!isAlreadyInAnilist) {
+                finalMetas.push({ id: "sukebei:" + toBase64Safe(cleanName), type: "series", name: cleanName, poster: generateDynamicPoster(cleanName) });
             }
         });
         return { metas: finalMetas, cacheMaxAge: finalMetas.length === 0 ? 60 : 86400 };
@@ -184,9 +181,7 @@ builder.defineCatalogHandler(async ({ id, extra, config }) => {
 });
 
 builder.defineMetaHandler(async ({ id }) => {
-    if (!id.startsWith("yomi:") && !id.startsWith("anilist:") && !id.startsWith("sukebei:")) {
-        return Promise.resolve({ meta: null });
-    }
+    if (!id.startsWith("yomi:") && !id.startsWith("anilist:") && !id.startsWith("sukebei:")) return Promise.resolve({ meta: null });
 
     let meta = null;
     let searchTitle = "";
@@ -200,10 +195,9 @@ builder.defineMetaHandler(async ({ id }) => {
             const rawMeta = await getAnimeMeta(aniListId);
             if (rawMeta) {
                 searchTitle = rawMeta.name;
-                meta = { ...rawMeta };
+                meta = { ...rawMeta }; 
             } else {
-                searchTitle = (parts.length > 2 && parts[2]) ? fromBase64Safe(parts[2]) : "Unknown Anime";
-                meta = { id: id, type: "series", name: searchTitle, poster: generateDynamicPoster(searchTitle) };
+                return Promise.resolve({ meta: null });
             }
         } else if (id.startsWith("sukebei:")) {
             const parts = id.split(":");
@@ -211,7 +205,6 @@ builder.defineMetaHandler(async ({ id }) => {
             searchTitle = base64Str ? fromBase64Safe(base64Str) : "Unknown";
             let cleanQuery = searchTitle.replace(/^\[.*?\]\s*/g, "").replace(/\[.*?\]/g, "").replace(/\(.*?\)/g, "").trim();
             const malData = await getJikanMeta(cleanQuery);
-            
             if (malData) {
                 meta = { 
                     id, type: "series", name: searchTitle.replace(/^\[.*?\]\s*/g, "").trim(), poster: malData.poster || generateDynamicPoster(searchTitle),
@@ -231,25 +224,27 @@ builder.defineMetaHandler(async ({ id }) => {
                 let maxDetected = 1;
                 torrents.forEach(t => {
                     const batch = getBatchRange(t.title);
-                    if (batch && batch.end > maxDetected && batch.end < 50) maxDetected = batch.end;
+                    if (batch && batch.end > maxDetected && batch.end < 5000) maxDetected = batch.end;
                     const ext = extractEpisodeNumber(t.title);
-                    if (ext && ext > maxDetected && ext < 50) maxDetected = ext;
+                    if (ext && ext > maxDetected && ext < 5000) maxDetected = ext;
                 });
                 if (maxDetected > epCount) epCount = maxDetected;
             } catch(e) {}
         }
-
+        
         const videos = [];
-        const episodeThumbnail = meta.background || meta.poster || "https://dummyimage.com/600x337/1a1a1a/e91e63.png?text=YOMI+EPISODE";
+        const defaultThumb = meta.background || meta.poster || "https://dummyimage.com/600x337/1a1a1a/e91e63.png?text=YOMI+EPISODE";
         
         const jikanEps = meta.idMal ? await fetchEpisodeDetails(meta.idMal) : {};
         const baseTime = meta.baseTime || Date.now();
         const epMeta = meta.epMeta || {};
+        
         const nextAiring = meta.nextAiringEpisode;
         
         for (let i = 1; i <= epCount; i++) {
             const epData = epMeta[i] || {};
             const jData = jikanEps[i] || {};
+            
             const finalTitle = jData.title || epData.title || ("Episode " + i);
             
             let finalDate;
@@ -268,12 +263,13 @@ builder.defineMetaHandler(async ({ id }) => {
                 season: 1, 
                 episode: i, 
                 released: finalDate, 
-                thumbnail: epData.thumbnail || episodeThumbnail 
+                thumbnail: epData.thumbnail || defaultThumb 
             });
         }
         meta.videos = videos;
         return { meta, cacheMaxAge: 604800 };
     } catch (err) {
+        if (id.startsWith("yomi:") || id.startsWith("anilist:")) return Promise.resolve({ meta: null });
         return { meta: { id, type: "series", name: "Unknown (Error)", poster: generateDynamicPoster("Error") }, cacheMaxAge: 60 };
     }
 });
@@ -283,6 +279,8 @@ builder.defineStreamHandler(async ({ id, config }) => {
     
     try {
         const userConfig = parseConfig(config);
+        if (!userConfig.rdKey && !userConfig.tbKey) return Promise.resolve({ streams: [] });
+
         let searchTitle = "", requestedEp = 1;
         let aniListIdForFallback = null;
         
@@ -331,6 +329,10 @@ builder.defineStreamHandler(async ({ id, config }) => {
                 const primaryWords = searchTitle.split(/\s+/);
                 if (primaryWords.length > 3) fallbackTitles.add(primaryWords.slice(0, 3).join(" "));
                 if (primaryWords.length > 4) fallbackTitles.add(primaryWords.slice(0, 4).join(" "));
+                if (fallbackMeta.altName) {
+                    const altWords = fallbackMeta.altName.split(/\s+/);
+                    if (altWords.length > 3) fallbackTitles.add(altWords.slice(0, 3).join(" "));
+                }
 
                 for (const altTitle of fallbackTitles) {
                     const cleanAlt = sanitizeSearchQuery(altTitle);
@@ -343,6 +345,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
         if (!torrents.length) return { streams: [], cacheMaxAge: 60 };
 
         const hashes = torrents.map(t => t.hash);
+        
         const [rdC, tbC, rdA, tbA] = await Promise.all([
             userConfig.rdKey ? checkRD(hashes, userConfig.rdKey) : {},
             userConfig.tbKey ? checkTorbox(hashes, userConfig.tbKey) : {},
@@ -351,6 +354,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
         ]);
 
         const streams = [];
+        
         const flags = { 
             "GER": "🇩🇪", "ITA": "🇮🇹", "FRE": "🇫🇷", "SPA": "🇪🇸", "RUS": "🇷🇺", 
             "POR": "🇵🇹", "ARA": "🇸🇦", "CHI": "🇨🇳", "KOR": "🇰🇷", "HIN": "🇮🇳", 
@@ -361,8 +365,10 @@ builder.defineStreamHandler(async ({ id, config }) => {
         torrents.forEach(t => {
             const hashLow = t.hash.toLowerCase();
             const files = rdC[hashLow] || tbC[hashLow];
+            
             const isBatch = getBatchRange(t.title) !== null;
             const batchIndicator = isBatch ? "📦 BATCH" : "🎬 EPISODE";
+            
             const streamLang = extractLanguage(t.title);
             const flag = flags[streamLang] || "🇬🇧";
             
@@ -387,53 +393,82 @@ builder.defineStreamHandler(async ({ id, config }) => {
                 if (!fileList) return [];
                 return fileList
                     .filter(f => {
-                        const name = (f.name || f.path || "").toLowerCase();
+                        const name = f.name || f.path || "";
                         if (!/\.(ass|srt|ssa|vtt)$/i.test(name)) return false;
                         const extEp = extractEpisodeNumber(name);
-                        return extEp !== null ? extEp === currentEp : isEpisodeMatch(name, currentEp);
+                        if (extEp !== null) return extEp === currentEp;
+                        return isEpisodeMatch(name, currentEp);
                     })
                     .map(f => {
                         let subLang = "English";
                         const n = (f.name || f.path || "").toLowerCase();
                         if (/ger|deu|deutsch/i.test(n)) subLang = "German";
+                        else if (/spa|esp|spanish/i.test(n)) subLang = "Spanish";
+                        else if (/rus|russian/i.test(n)) subLang = "Russian";
+                        else if (/fre|fra|french|vostfr/i.test(n)) subLang = "French";
+                        else if (/ita|italian/i.test(n)) subLang = "Italian";
+                        else if (/por|portuguese/i.test(n)) subLang = "Portuguese";
+                        else if (/pol|polish/i.test(n)) subLang = "Polish";
+                        else if (/chinese|chs|cht|big5|简|繁|中文字幕/i.test(n)) subLang = "Chinese";
+                        else if (/ara|arabic/i.test(n)) subLang = "Arabic";
+                        else if (/jpn|japanese/i.test(n)) subLang = "Japanese";
+                        else if (/kor|korean/i.test(n)) subLang = "Korean";
+                        else if (/hin|hindi/i.test(n)) subLang = "Hindi";
                         else if (/eng|english/i.test(n)) subLang = "English";
+
                         const extMatch = n.match(/\.(ass|srt|ssa|vtt)$/);
-                        return { id: f.id, url: BASE_URL + "/sub/" + provider + "/" + apiKey + "/" + t.hash + "/" + f.id + "?filename=" + encodeURIComponent(n), lang: subLang + " (" + (extMatch ? extMatch[1].toUpperCase() : "SUB") + ")" };
+                        const ext = extMatch ? extMatch[1].toUpperCase() : "SUB";
+
+                        return { 
+                            id: f.id, 
+                            url: BASE_URL + "/sub/" + provider + "/" + apiKey + "/" + t.hash + "/" + f.id + "?filename=" + encodeURIComponent(n), 
+                            lang: subLang + " (" + ext + ")" 
+                        };
                     });
             };
 
             if (userConfig.rdKey) {
                 const fRD = rdC[hashLow];
                 const prog = rdA[hashLow];
-                const name = (fRD || prog === 100) ? "YOMI [⚡ RD]\n🎥 " + res + langAddon : (prog !== undefined ? "YOMI [⏳ " + prog + "% RD]\n🎥 " + res + langAddon : "YOMI [☁️ RD DL]\n🎥 " + res + langAddon);
-                streams.push({ name: name, description: displayTitle, url: BASE_URL + "/resolve/realdebrid/" + userConfig.rdKey + "/" + t.hash + "/" + requestedEp, subtitles: buildSubs(fRD, "realdebrid", userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: "rd_" + t.hash, filename: matchedFileName }, _bytes: bytes, _lang: streamLang });
+                const name = (fRD || prog === 100) ? `YOMI [⚡ RD]\n🎥 ${res}${langAddon}` : (prog !== undefined ? `YOMI [⏳ ${prog}% RD]\n🎥 ${res}${langAddon}` : `YOMI [☁️ RD DL]\n🎥 ${res}${langAddon}`);
+                streams.push({ name: name, description: displayTitle, url: BASE_URL + "/resolve/realdebrid/" + userConfig.rdKey + "/" + t.hash + "/" + requestedEp, subtitles: buildSubs(fRD, "realdebrid", userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: "yomi_rd_" + t.hash, filename: matchedFileName }, _bytes: bytes, _lang: streamLang });
             }
 
             if (userConfig.tbKey) {
                 const fTB = tbC[hashLow];
                 const prog = tbA[hashLow];
-                const name = (fTB || prog === 100) ? "YOMI [⚡ TB]\n🎥 " + res + langAddon : (prog !== undefined ? "YOMI [⏳ " + prog + "% TB]\n🎥 " + res + langAddon : "YOMI [☁️ TB DL]\n🎥 " + res + langAddon);
-                streams.push({ name: name, description: displayTitle, url: BASE_URL + "/resolve/torbox/" + userConfig.tbKey + "/" + t.hash + "/" + requestedEp, subtitles: buildSubs(fTB, "torbox", userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: "tb_" + t.hash, filename: matchedFileName }, _bytes: bytes, _lang: streamLang });
+                const name = (fTB || prog === 100) ? `YOMI [⚡ TB]\n🎥 ${res}${langAddon}` : (prog !== undefined ? `YOMI [⏳ ${prog}% TB]\n🎥 ${res}${langAddon}` : `YOMI [☁️ TB DL]\n🎥 ${res}${langAddon}`);
+                streams.push({ name: name, description: displayTitle, url: BASE_URL + "/resolve/torbox/" + userConfig.tbKey + "/" + t.hash + "/" + requestedEp, subtitles: buildSubs(fTB, "torbox", userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: "yomi_tb_" + t.hash, filename: matchedFileName }, _bytes: bytes, _lang: streamLang });
             }
         });
         
         const rawLangs = userConfig.language || ["ENG"];
         const userLangs = Array.isArray(rawLangs) ? rawLangs : [rawLangs];
-
+        
         return { 
             streams: streams.sort((a, b) => {
-                const getScore = (l) => (userLangs.includes(l) || l === "MULTI") ? 3 : (l === "ENG" ? 2 : 1);
-                const diff = getScore(b._lang) - getScore(a._lang);
-                if (diff !== 0) return diff;
-                const aC = a.name.includes("⚡");
-                const bC = b.name.includes("⚡");
-                if (aC && !bC) return -1;
-                if (!aC && bC) return 1;
+                const getLangScore = (lang) => {
+                    if (userLangs.includes(lang) || lang === "MULTI") return 3; 
+                    if (lang === "ENG") return 2;                               
+                    return 1;                                                   
+                };
+
+                const scoreA = getLangScore(a._lang);
+                const scoreB = getLangScore(b._lang);
+                
+                if (scoreA !== scoreB) return scoreB - scoreA;
+                
+                const aCached = a.name.includes("⚡");
+                const bCached = b.name.includes("⚡");
+                if (aCached && !bCached) return -1;
+                if (!aCached && bCached) return 1;
+                
                 return b._bytes - a._bytes;
-            }), cacheMaxAge: 5 
+            }), 
+            cacheMaxAge: 5 
         };
     } catch (err) {
-        console.error("[Stream Error]", err.message);
+        console.error(`[!] CRITICAL ERROR in Stream Pipeline:`, err);
         return { streams: [] };
     }
 });
