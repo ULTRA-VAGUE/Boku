@@ -1,8 +1,7 @@
 //===============
 // YOMI STREMIO ADDON - CORE LOGIC
 // The main entry point for the Stremio logic.
-// Strictly uses standard prefixes (anilist: / sukebei:) to ensure native Stremio compatibility.
-// Integrates safe Base64 polyfills to prevent Node.js version crashes.
+// Version Bump: Added missing 3-tier language priority sorting, yomi: prefix shielding, and chronological search sorting.
 //===============
 
 const { addonBuilder } = require("stremio-addon-sdk");
@@ -11,19 +10,13 @@ const { searchSukebeiForHentai, cleanTorrentTitle } = require("./lib/sukebei");
 const { checkRD, checkTorbox, getActiveRD, getActiveTorbox } = require("./lib/debrid");
 const { extractEpisodeNumber, getBatchRange, isEpisodeMatch, selectBestVideoFile } = require("./lib/parser");
 
-
-// Fallback for missing environment variables when self-hosting, sanitizing trailing slashes
 let BASE_URL = process.env.BASE_URL || "http://127.0.0.1:7000";
 BASE_URL = BASE_URL.replace(/\/+$/, "");
 
-
-// Polyfill for base64url encoding to ensure compatibility across all Node.js versions
 function toBase64Safe(str) {
     return Buffer.from(str, "utf8").toString("base64").replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-
-// Polyfill for base64url decoding
 function fromBase64Safe(str) {
     return Buffer.from(str.replace(/-/g, '+').replace(/_/g, '/'), "base64").toString("utf8");
 }
@@ -33,15 +26,15 @@ function fromBase64Safe(str) {
 //===============
 const manifest = {
     id: "org.community.yomi",
-    version: "5.2.8",
+    version: "5.2.9",
     name: "Yomi",
     logo: "https://github.com/mralanbourne/Yomi/blob/main/static/yomi.png?raw=true", 
     description: "The ultimate Debrid-powered Sukebei gateway. Streams raw, uncompressed Hentai & NSFW Anime directly via Real-Debrid or Torbox. Smart-parsing tames chaotic torrent names for a clean catalog. Pure quality, zero buffering. Info: github.com/mralanbourne/Yomi",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
     
-    // Restored standard native prefixes
-    idPrefixes: ["anilist:", "sukebei:"],
+    // Added "yomi:" to explicit prefixes to handle shielded catalog routing
+    idPrefixes: ["yomi:", "anilist:", "sukebei:"],
     catalogs: [
         { id: "sukebei_trending", type: "series", name: "Yomi Trending" },
         { id: "sukebei_top", type: "series", name: "Yomi Top Rated" },
@@ -53,8 +46,6 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-
-// Safe parsing of the user configuration.
 function parseConfig(config) {
     if (!config) return {};
     if (typeof config === "object") return config;
@@ -63,8 +54,6 @@ function parseConfig(config) {
     }
 }
 
-
-// Safely parses varying size units from Sukebei to prevent sorting metric explosions.
 function parseSizeToBytes(sizeStr) {
     if (!sizeStr || typeof sizeStr !== "string") return 0;
     const match = sizeStr.match(/([\d.]+)\s*(GB|MB|KB|GiB|MiB|KiB|B)/i);
@@ -77,24 +66,38 @@ function parseSizeToBytes(sizeStr) {
     return val;
 }
 
-
-// Analyses the file extension and language tags from filenames.
 function extractTags(title) {
-    let res = "SD", lang = "Raw";
+    let res = "SD";
     if (/(1080p|1080|FHD)/i.test(title)) res = "1080p";
     else if (/(720p|720|HD)/i.test(title)) res = "720p";
     else if (/(2160p|4k|UHD)/i.test(title)) res = "4K";
-    
-    if (/(eng|english)/i.test(title)) lang = "Eng Sub";
-    else if (/(multi|dual)/i.test(title)) lang = "Multi";
-    else if (/(sub)/i.test(title)) lang = "Subbed";
-    
-    if (/(uncensored|decensored)/i.test(title)) lang += " | Uncen";
-    return { res, lang };
+    return { res };
 }
 
+// Ported expanded language scanner from Amatsu for proper Multi-Tier Sorting
+function extractLanguage(title) {
+    const lower = title.toLowerCase();
+    if (/(multi|dual|multi-audio|multi-sub)/i.test(lower)) return "MULTI";
+    if (/\b(ger|deu|german|deutsch)\b/i.test(lower)) return "GER";
+    if (/\b(ita|italian)\b/i.test(lower)) return "ITA";
+    if (/\b(fre|fra|french|vostfr|vf)\b/i.test(lower)) return "FRE";
+    if (/\b(spa|esp|spanish)\b/i.test(lower)) return "SPA";
+    if (/\b(rus|russian)\b/i.test(lower)) return "RUS";
+    if (/\b(por|pt-br|portuguese)\b/i.test(lower)) return "POR";
+    if (/\b(ara|arabic)\b/i.test(lower)) return "ARA";
+    if (/\b(chinese|mandarin|chs|cht|big5)\b|(简|繁|中文字幕)/i.test(lower)) return "CHI";
+    if (/\b(kor|korean)\b/i.test(lower)) return "KOR";
+    if (/\b(hin|hindi)\b/i.test(lower)) return "HIN";
+    if (/\b(pol|polish)\b/i.test(lower)) return "POL";
+    if (/\b(nld|dut|dutch)\b/i.test(lower)) return "NLD";
+    if (/\b(tur|turkish)\b/i.test(lower)) return "TUR";
+    if (/\b(vie|vietnamese)\b/i.test(lower)) return "VIE";
+    if (/\b(ind|indonesian)\b/i.test(lower)) return "IND";
+    if (/\b(jpn|japanese|raw)\b/i.test(lower)) return "JPN";
+    if (/\b(eng|english|subbed)\b/i.test(lower)) return "ENG";
+    return "ENG"; 
+}
 
-// Prepares the search query for Jikan fallbacks.
 function sanitizeSearchQuery(title) {
     return title.replace(/\(.*?\)/g, "").replace(/\[.*?\]/g, "").replace(/\s{2,}/g, " ").trim();
 }
@@ -103,9 +106,7 @@ function isTitleMatchingEpisode(title, requestedEp) {
     if (/batch|complete|all\s+episodes/i.test(title)) return true;
     return isEpisodeMatch(title, requestedEp);
 }
-    
 
-// Generates posters for streams with no known metadata.
 function generateDynamicPoster(title) {
     let clean = title.replace(/^\[.*?\]\s*/g, "").replace(/\[.*?\]/g, " ").replace(/\(.*?\)/g, " ");
     let safeTitle = clean.replace(/[^a-zA-Z0-9 ]/g, "").replace(/\s{2,}/g, " ").substring(0, 30).trim().toUpperCase();
@@ -119,7 +120,6 @@ function generateDynamicPoster(title) {
         } else { line += word + " "; }
     }
     if (line) lines.push(line.trim());
-    
     return "https://dummyimage.com/600x900/1a1a1a/e91e63.png?text=" + encodeURIComponent(lines.join("\n"));
 }
 
@@ -129,24 +129,29 @@ function generateDynamicPoster(title) {
 
 builder.defineCatalogHandler(async ({ id, extra, config }) => {
     console.log("[Catalog Request] Fetching catalog: " + id);
-    
     const userConfig = parseConfig(config);
     
     if (id === "sukebei_trending") {
         if (userConfig.showTrending === false) return { metas: [] };
         return { metas: await getTrendingAdultAnime(), cacheMaxAge: 43200 };
     }
-    
     if (id === "sukebei_top") {
         if (userConfig.showTop === false) return { metas: [] };
         return { metas: await getTopAdultAnime(), cacheMaxAge: 43200 };
     }
-    
     if (id === "sukebei_search" && extra.search) {
         const [anilistMetas, sukebeiTorrents] = await Promise.all([
             searchAdultAnime(extra.search), 
             searchSukebeiForHentai(extra.search)
         ]);
+        
+        // CHRONOLOGICAL SORTING ENGINE: Resolves OVA/Sequel Watch-Order issues
+        anilistMetas.sort((a, b) => {
+            const dateA = a.released ? new Date(a.released).getTime() : Infinity;
+            const dateB = b.released ? new Date(b.released).getTime() : Infinity;
+            return dateA - dateB;
+        });
+
         const finalMetas = [...anilistMetas];
         const rawGroups = {};
         
@@ -171,7 +176,8 @@ builder.defineCatalogHandler(async ({ id, extra, config }) => {
 });
 
 builder.defineMetaHandler(async ({ id }) => {
-    if (!id.startsWith("anilist:") && !id.startsWith("sukebei:")) {
+    // Extended protection for yomi: prefix
+    if (!id.startsWith("yomi:") && !id.startsWith("anilist:") && !id.startsWith("sukebei:")) {
         return Promise.resolve({ meta: null });
     }
 
@@ -181,7 +187,7 @@ builder.defineMetaHandler(async ({ id }) => {
     let searchTitle = "";
 
     try {
-        if (id.startsWith("anilist:")) {
+        if (id.startsWith("yomi:") || id.startsWith("anilist:")) {
             const parts = id.split(":");
             let aniListId = parts[1];
             
@@ -193,17 +199,8 @@ builder.defineMetaHandler(async ({ id }) => {
             	
             if (rawMeta) {
                 searchTitle = rawMeta.name;
-                meta = {
-                    id: id,
-                    type: rawMeta.type,
-                    name: rawMeta.name,
-                    poster: rawMeta.poster,
-                    background: rawMeta.background,
-                    description: rawMeta.description,
-                    releaseInfo: rawMeta.releaseInfo,
-                    released: rawMeta.released,
-                    episodes: rawMeta.episodes
-                };
+                // Shallow copy prevents cache mutation breaking LRU
+                meta = { ...rawMeta };
             } else {
                 searchTitle = (parts.length > 2 && parts[2]) 
                     ? fromBase64Safe(parts[2]) 
@@ -272,7 +269,7 @@ builder.defineMetaHandler(async ({ id }) => {
 });
 
 builder.defineStreamHandler(async ({ id, config }) => {
-    if (!id.startsWith("anilist:") && !id.startsWith("sukebei:")) return Promise.resolve({ streams: [] });
+    if (!id.startsWith("yomi:") && !id.startsWith("anilist:") && !id.startsWith("sukebei:")) return Promise.resolve({ streams: [] });
     
     console.log("[Stream Request] Processing request for ID: " + id);
 
@@ -281,7 +278,7 @@ builder.defineStreamHandler(async ({ id, config }) => {
         let searchTitle = "", requestedEp = 1;
         let aniListIdForFallback = null;
         
-        if (id.startsWith("anilist:")) {
+        if (id.startsWith("yomi:") || id.startsWith("anilist:")) {
             const parts = id.split(":");
             aniListIdForFallback = isNaN(parts[1]) ? parts.find(p => !isNaN(p) && p.length > 0) : parts[1];
             
@@ -337,8 +334,6 @@ builder.defineStreamHandler(async ({ id, config }) => {
                     });
                 }
 
-                
-                // ADVANCED FALLBACK: Truncate long Light Novel titles to bypass Sukebei strict limits
                 const primaryWords = searchTitle.split(/\s+/);
                 if (primaryWords.length > 3) fallbackTitles.add(primaryWords.slice(0, 3).join(" "));
                 if (primaryWords.length > 4) fallbackTitles.add(primaryWords.slice(0, 4).join(" "));
@@ -375,16 +370,27 @@ builder.defineStreamHandler(async ({ id, config }) => {
         ]);
 
         const streams = [];
+        
+        // Flag definitions corresponding to the UI inputs
+        const flags = { 
+            "GER": "🇩🇪", "ITA": "🇮🇹", "FRE": "🇫🇷", "SPA": "🇪🇸", "RUS": "🇷🇺", 
+            "POR": "🇵🇹", "ARA": "🇸🇦", "CHI": "🇨🇳", "KOR": "🇰🇷", "HIN": "🇮🇳", 
+            "POL": "🇵🇱", "NLD": "🇳🇱", "TUR": "🇹🇷", "VIE": "🇻🇳", "IND": "🇮🇩", 
+            "JPN": "🇯🇵", "ENG": "🇬🇧", "MULTI": "🌍" 
+        };
+
         torrents.forEach(t => {
             const hashLow = t.hash.toLowerCase();
             const files = rdC[hashLow] || tbC[hashLow];
             
-            
-            // SEMANTIC UX: Clearly identify if the torrent is a batch release or a single episode
             const isBatch = getBatchRange(t.title) !== null;
             const batchIndicator = isBatch ? "📦 BATCH" : "🎬 EPISODE";
             
-            let displayTitle = "🌐 Sukebei | " + batchIndicator + "\n💾 " + t.size + " | 👤 " + t.seeders;
+            // Inject Language Flag into Display Title
+            const streamLang = extractLanguage(t.title);
+            const flag = flags[streamLang] || "🇬🇧";
+            
+            let displayTitle = `${flag} Sukebei | ${batchIndicator}\n💾 ${t.size} | 👤 ${t.seeders}`;
             
             let matchedFileName = undefined;
 
@@ -398,7 +404,10 @@ builder.defineStreamHandler(async ({ id, config }) => {
                 displayTitle += "\n📄 " + t.title;
             }
 
-            const { res, lang } = extractTags(t.title);
+            const { res } = extractTags(t.title);
+            let langAddon = "";
+            if (/(uncensored|decensored)/i.test(t.title)) langAddon = " | Uncen";
+            
             const bytes = parseSizeToBytes(t.size);
             
             const buildSubs = (fileList, provider, apiKey, currentEp) => {
@@ -406,8 +415,6 @@ builder.defineStreamHandler(async ({ id, config }) => {
                 return fileList
                     .filter(f => {
                         const name = f.name || f.path || "";
-                        
-        				// .idx and .sub (VobSub) are strictly filtered out here as they crash the Stremio web player
                         if (!/\.(ass|srt|ssa|vtt)$/i.test(name)) return false;
                         const extEp = extractEpisodeNumber(name);
                         if (extEp !== null) {
@@ -436,8 +443,6 @@ builder.defineStreamHandler(async ({ id, config }) => {
                         const extMatch = n.match(/\.(ass|srt|ssa|vtt)$/);
                         const ext = extMatch ? extMatch[1].toUpperCase() : "SUB";
 
-                        
-                        // Append original filename to query to allow correct MIME type parsing for Torbox
                         return { 
                             id: f.id, 
                             url: BASE_URL + "/sub/" + provider + "/" + apiKey + "/" + t.hash + "/" + f.id + "?filename=" + encodeURIComponent(n), 
@@ -446,27 +451,38 @@ builder.defineStreamHandler(async ({ id, config }) => {
                     });
             };
 
-            
-            // Using "description" instead of "title" to ensure complete compliance with the latest Stremio SDK
             if (userConfig.rdKey) {
                 const fRD = rdC[hashLow];
                 const prog = rdA[hashLow];
-                const name = (fRD || prog === 100) ? "YOMI [⚡ RD]\n🎥 " + res : (prog !== undefined ? "YOMI [⏳ " + prog + "% RD]\n🎥 " + res : "YOMI [☁️ RD DL]\n🎥 " + res);
-                streams.push({ name: name, description: displayTitle, url: BASE_URL + "/resolve/realdebrid/" + userConfig.rdKey + "/" + t.hash + "/" + requestedEp, subtitles: buildSubs(fRD, "realdebrid", userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: "rd_" + t.hash, filename: matchedFileName }, _bytes: bytes });
+                const name = (fRD || prog === 100) ? "YOMI [⚡ RD]\n🎥 " + res + langAddon : (prog !== undefined ? "YOMI [⏳ " + prog + "% RD]\n🎥 " + res + langAddon : "YOMI [☁️ RD DL]\n🎥 " + res + langAddon);
+                streams.push({ name: name, description: displayTitle, url: BASE_URL + "/resolve/realdebrid/" + userConfig.rdKey + "/" + t.hash + "/" + requestedEp, subtitles: buildSubs(fRD, "realdebrid", userConfig.rdKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: "rd_" + t.hash, filename: matchedFileName }, _bytes: bytes, _lang: streamLang });
             }
 
             if (userConfig.tbKey) {
                 const fTB = tbC[hashLow];
                 const prog = tbA[hashLow];
-                const name = (fTB || prog === 100) ? "YOMI [⚡ TB]\n🎥 " + res : (prog !== undefined ? "YOMI [⏳ " + prog + "% TB]\n🎥 " + res : "YOMI [☁️ TB DL]\n🎥 " + res);
-                streams.push({ name: name, description: displayTitle, url: BASE_URL + "/resolve/torbox/" + userConfig.tbKey + "/" + t.hash + "/" + requestedEp, subtitles: buildSubs(fTB, "torbox", userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: "tb_" + t.hash, filename: matchedFileName }, _bytes: bytes });
+                const name = (fTB || prog === 100) ? "YOMI [⚡ TB]\n🎥 " + res + langAddon : (prog !== undefined ? "YOMI [⏳ " + prog + "% TB]\n🎥 " + res + langAddon : "YOMI [☁️ TB DL]\n🎥 " + res + langAddon);
+                streams.push({ name: name, description: displayTitle, url: BASE_URL + "/resolve/torbox/" + userConfig.tbKey + "/" + t.hash + "/" + requestedEp, subtitles: buildSubs(fTB, "torbox", userConfig.tbKey, requestedEp), behaviorHints: { notWebReady: true, bingeGroup: "tb_" + t.hash, filename: matchedFileName }, _bytes: bytes, _lang: streamLang });
             }
         });
         
-        
-        // Safely sort streams: priority to cached links, then strict fallback to file size descending
+        // MISSING LINK: Activated the 3-Tier priority sorting using userConfig.language
+        const rawLangs = userConfig.language || ["ENG"];
+        const userLangs = Array.isArray(rawLangs) ? rawLangs : [rawLangs];
+
         return { 
             streams: streams.sort((a, b) => {
+                const getLangScore = (lang) => {
+                    if (userLangs.includes(lang) || lang === "MULTI") return 3; 
+                    if (lang === "ENG") return 2;                               
+                    return 1;                                                   
+                };
+
+                const scoreA = getLangScore(a._lang);
+                const scoreB = getLangScore(b._lang);
+                
+                if (scoreA !== scoreB) return scoreB - scoreA;
+                
                 const aCached = a.name.includes("⚡");
                 const bCached = b.name.includes("⚡");
                 if (aCached && !bCached) return -1;
