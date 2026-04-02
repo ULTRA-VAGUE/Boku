@@ -1,11 +1,11 @@
 //===============
 // YOMI STREMIO ADDON - CORE LOGIC
 // The main entry point for the Stremio logic.
-// Version Bump: Added missing 3-tier language priority sorting, yomi: prefix shielding, and chronological search sorting.
+// Version Bump: Ported Amatsu Episode Title Extraction and Reverse-Math Air Dates.
 //===============
 
 const { addonBuilder } = require("stremio-addon-sdk");
-const { searchAdultAnime, getAnimeMeta, getTrendingAdultAnime, getTopAdultAnime, getJikanMeta } = require("./lib/anilist");
+const { searchAdultAnime, getAnimeMeta, getTrendingAdultAnime, getTopAdultAnime, getJikanMeta, fetchEpisodeDetails } = require("./lib/anilist");
 const { searchSukebeiForHentai, cleanTorrentTitle } = require("./lib/sukebei");
 const { checkRD, checkTorbox, getActiveRD, getActiveTorbox } = require("./lib/debrid");
 const { extractEpisodeNumber, getBatchRange, isEpisodeMatch, selectBestVideoFile } = require("./lib/parser");
@@ -26,14 +26,12 @@ function fromBase64Safe(str) {
 //===============
 const manifest = {
     id: "org.community.yomi",
-    version: "5.2.9",
+    version: "5.2.10",
     name: "Yomi",
     logo: "https://github.com/mralanbourne/Yomi/blob/main/static/yomi.png?raw=true", 
     description: "The ultimate Debrid-powered Sukebei gateway. Streams raw, uncompressed Hentai & NSFW Anime directly via Real-Debrid or Torbox. Smart-parsing tames chaotic torrent names for a clean catalog. Pure quality, zero buffering. Info: github.com/mralanbourne/Yomi",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
-    
-    // Added "yomi:" to explicit prefixes to handle shielded catalog routing
     idPrefixes: ["yomi:", "anilist:", "sukebei:"],
     catalogs: [
         { id: "sukebei_trending", type: "series", name: "Yomi Trending" },
@@ -74,7 +72,6 @@ function extractTags(title) {
     return { res };
 }
 
-// Ported expanded language scanner from Amatsu for proper Multi-Tier Sorting
 function extractLanguage(title) {
     const lower = title.toLowerCase();
     if (/(multi|dual|multi-audio|multi-sub)/i.test(lower)) return "MULTI";
@@ -145,7 +142,6 @@ builder.defineCatalogHandler(async ({ id, extra, config }) => {
             searchSukebeiForHentai(extra.search)
         ]);
         
-        // CHRONOLOGICAL SORTING ENGINE: Resolves OVA/Sequel Watch-Order issues
         anilistMetas.sort((a, b) => {
             const dateA = a.released ? new Date(a.released).getTime() : Infinity;
             const dateB = b.released ? new Date(b.released).getTime() : Infinity;
@@ -176,7 +172,6 @@ builder.defineCatalogHandler(async ({ id, extra, config }) => {
 });
 
 builder.defineMetaHandler(async ({ id }) => {
-    // Extended protection for yomi: prefix
     if (!id.startsWith("yomi:") && !id.startsWith("anilist:") && !id.startsWith("sukebei:")) {
         return Promise.resolve({ meta: null });
     }
@@ -199,7 +194,6 @@ builder.defineMetaHandler(async ({ id }) => {
             	
             if (rawMeta) {
                 searchTitle = rawMeta.name;
-                // Shallow copy prevents cache mutation breaking LRU
                 meta = { ...rawMeta };
             } else {
                 searchTitle = (parts.length > 2 && parts[2]) 
@@ -225,10 +219,12 @@ builder.defineMetaHandler(async ({ id }) => {
                     description: malData.description, 
                     releaseInfo: malData.releaseInfo,
                     released: malData.released,
-                    episodes: malData.episodes
+                    episodes: malData.episodes,
+                    baseTime: malData.baseTime, 
+                    epMeta: {}
                 };
             } else {
-                meta = { id, type: "series", name: searchTitle.replace(/^\[.*?\]\s*/g, "").trim(), poster: generateDynamicPoster(searchTitle) };
+                meta = { id, type: "series", name: searchTitle.replace(/^\[.*?\]\s*/g, "").trim(), poster: generateDynamicPoster(searchTitle), baseTime: Date.now(), epMeta: {} };
             }
         }
         
@@ -254,8 +250,36 @@ builder.defineMetaHandler(async ({ id }) => {
         const videos = [];
         const episodeThumbnail = meta.background || meta.poster || "https://dummyimage.com/600x337/1a1a1a/e91e63.png?text=YOMI+EPISODE";
         
+        // META INJECTION: Dynamic Titles and Timestamps using Jikan Pagination & Reverse-Math
+        const jikanEps = meta.idMal ? await fetchEpisodeDetails(meta.idMal) : {};
+        const baseTime = meta.baseTime || Date.now();
+        const epMeta = meta.epMeta || {};
+        const nextAiring = meta.nextAiringEpisode;
+        
         for (let i = 1; i <= epCount; i++) {
-            videos.push({ id: meta.id + ":1:" + i, title: "Episode " + i, season: 1, episode: i, released: new Date().toISOString(), thumbnail: episodeThumbnail });
+            const epData = epMeta[i] || {};
+            const jData = jikanEps[i] || {};
+            
+            const finalTitle = jData.title || epData.title || ("Episode " + i);
+            
+            let finalDate;
+            if (jData.aired) {
+                finalDate = new Date(jData.aired).toISOString();
+            } else if (nextAiring && nextAiring.episode && nextAiring.airingAt) {
+                const weeksBehind = nextAiring.episode - i;
+                finalDate = new Date((nextAiring.airingAt * 1000) - (weeksBehind * 7 * 24 * 60 * 60 * 1000)).toISOString();
+            } else {
+                finalDate = new Date(baseTime + (i - 1) * 7 * 24 * 60 * 60 * 1000).toISOString();
+            }
+
+            videos.push({ 
+                id: meta.id + ":1:" + i, 
+                title: finalTitle, 
+                season: 1, 
+                episode: i, 
+                released: finalDate, 
+                thumbnail: epData.thumbnail || episodeThumbnail 
+            });
         }
         meta.videos = videos;
         return { meta, cacheMaxAge: 604800 };
@@ -371,7 +395,6 @@ builder.defineStreamHandler(async ({ id, config }) => {
 
         const streams = [];
         
-        // Flag definitions corresponding to the UI inputs
         const flags = { 
             "GER": "🇩🇪", "ITA": "🇮🇹", "FRE": "🇫🇷", "SPA": "🇪🇸", "RUS": "🇷🇺", 
             "POR": "🇵🇹", "ARA": "🇸🇦", "CHI": "🇨🇳", "KOR": "🇰🇷", "HIN": "🇮🇳", 
@@ -386,7 +409,6 @@ builder.defineStreamHandler(async ({ id, config }) => {
             const isBatch = getBatchRange(t.title) !== null;
             const batchIndicator = isBatch ? "📦 BATCH" : "🎬 EPISODE";
             
-            // Inject Language Flag into Display Title
             const streamLang = extractLanguage(t.title);
             const flag = flags[streamLang] || "🇬🇧";
             
@@ -466,7 +488,6 @@ builder.defineStreamHandler(async ({ id, config }) => {
             }
         });
         
-        // MISSING LINK: Activated the 3-Tier priority sorting using userConfig.language
         const rawLangs = userConfig.language || ["ENG"];
         const userLangs = Array.isArray(rawLangs) ? rawLangs : [rawLangs];
 
