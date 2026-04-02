@@ -1,7 +1,6 @@
 //===============
 // YOMI STREMIO ADDON - CORE LOGIC
 // The main entry point for the Stremio logic.
-// Version 6.7.0: 100% Amatsu-Parity restore for unminified, reliable episode metadata extraction.
 //===============
 
 const { addonBuilder } = require("stremio-addon-sdk");
@@ -26,10 +25,10 @@ function fromBase64Safe(str) {
 //===============
 const manifest = {
     id: "org.community.yomi",
-    version: "6.7.0",
+    version: "6.7.1",
     name: "Yomi",
     logo: BASE_URL + "/yomi.png", 
-    description: "The ultimate Debrid-powered Sukebei gateway. Streams raw, uncompressed Hentai & NSFW Anime directly via Real-Debrid or Torbox. Smart-parsing tames chaotic torrent names for a clean catalog. Pure quality, zero buffering.",
+    description: "The ultimate Debrid-powered Sukebei gateway. Streams raw, uncompressed Hentai & NSFW Anime directly via Real-Debrid or Torbox.",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
     idPrefixes: ["yomi:", "anilist:", "sukebei:"],
@@ -192,13 +191,38 @@ builder.defineMetaHandler(async ({ id }) => {
             let aniListId = parts[1];
             if (isNaN(aniListId)) aniListId = parts.find(p => !isNaN(p) && p.length > 0) || parts[1];
 	
-            const rawMeta = await getAnimeMeta(aniListId);
+            let rawMeta = await getAnimeMeta(aniListId);
+            
+            // If AniList severely blocks the query, immediately pivot to Jikan to save the UI.
+            if (!rawMeta && parts.length > 2 && parts[2]) {
+                const fallbackTitle = fromBase64Safe(parts[2]);
+                console.log(`[Meta Fallback] AniList returned null for ${aniListId}. Engaging Jikan rescue for: ${fallbackTitle}`);
+                const jikanData = await getJikanMeta(fallbackTitle);
+                if (jikanData) {
+                    rawMeta = {
+                        id: id,
+                        type: "series",
+                        name: fallbackTitle,
+                        poster: jikanData.poster || generateDynamicPoster(fallbackTitle),
+                        background: jikanData.background || "",
+                        description: jikanData.description || "",
+                        releaseInfo: jikanData.releaseInfo,
+                        released: jikanData.released,
+                        episodes: jikanData.episodes,
+                        baseTime: jikanData.baseTime,
+                        epMeta: jikanData.epMeta || {}
+                    };
+                }
+            }
+
             if (rawMeta) {
                 searchTitle = rawMeta.name;
                 meta = { ...rawMeta }; 
             } else {
-                return Promise.resolve({ meta: null });
+                searchTitle = (parts.length > 2 && parts[2]) ? fromBase64Safe(parts[2]) : "Unknown Anime";
+                meta = { id: id, type: "series", name: searchTitle, poster: generateDynamicPoster(searchTitle), epMeta: {}, baseTime: Date.now() };
             }
+            
         } else if (id.startsWith("sukebei:")) {
             const parts = id.split(":");
             const base64Str = parts[1];
